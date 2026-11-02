@@ -1,0 +1,891 @@
+
+
+
+
+MOQ                                                         A. F. Zengin
+Internet-Draft                                                  Z. Gurel
+Intended status: Standards Track                      Ozyegin University
+Expires: 6 May 2027                                             A. Begen
+                                                         Networked Media
+                                                                 D. Ugur
+                                                      Ozyegin University
+                                                         2 November 2026
+
+
+    A Backpressure Algorithm for Sender-Side Track Switching in MOQ
+                               Transport
+               draft-zengin-moq-ssts-backpressure-latest
+
+Abstract
+
+   Sender-Side Track Switching (SSTS) lets a publisher forward one track
+   at a time out of a switching set, and leaves the choice of which
+   track to a pluggable algorithm.  The default algorithm divides a
+   bandwidth estimate between switching sets.  This document defines an
+   alternative algorithm that uses no bandwidth estimate at all.  It
+   monitors the number of open forwarding streams carrying the currently
+   active tier, steps rapidly through the switching set's ladder during
+   fast start, regulates steady-state upshifts dynamically according to
+   relative bitrate jumps and the subscriber's probing risk tolerance,
+   and reacts to mid-group congestion using intra-group monitoring and
+   retroactive stream supersede.  The signal is directly observable at
+   the publisher, requires no cooperation from the congestion
+   controller, and degrades toward the lowest quality under load rather
+   than toward none.
+
+Status of This Memo
+
+   This Internet-Draft is submitted in full conformance with the
+   provisions of BCP 78 and BCP 79.
+
+   Internet-Drafts are working documents of the Internet Engineering
+   Task Force (IETF).  Note that other groups may also distribute
+   working documents as Internet-Drafts.  The list of current Internet-
+   Drafts is at https://datatracker.ietf.org/drafts/current/.
+
+   Internet-Drafts are draft documents valid for a maximum of six months
+   and may be updated, replaced, or obsoleted by other documents at any
+   time.  It is inappropriate to use Internet-Drafts as reference
+   material or to cite them other than as "work in progress."
+
+   This Internet-Draft will expire on 6 May 2027.
+
+Copyright Notice
+
+   Copyright (c) 2026 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents (https://trustee.ietf.org/
+   license-info) in effect on the date of publication of this document.
+   Please review these documents carefully, as they describe your rights
+   and restrictions with respect to this document.  Code Components
+   extracted from this document must include Revised BSD License text as
+   described in Section 4.e of the Trust Legal Provisions and are
+   provided without warranty as described in the Revised BSD License.
+
+Table of Contents
+
+   1.  Introduction
+     1.1.  Scope
+   2.  Conventions and Definitions
+   3.  Algorithm Overview
+   4.  Negotiation and Assignment
+     4.1.  Negotiation
+     4.2.  SWITCHING_SET_ASSIGNMENT Fields
+     4.3.  Subscriber Behavior
+   5.  Publisher Behavior
+     5.1.  Ladder Construction
+     5.2.  Signals
+     5.3.  State Machine and Adaptation Logic
+       5.3.1.  Fast Start (exploring = true)
+       5.3.2.  Steady-State Regulation (exploring = false)
+       5.3.3.  Intra-Group Monitoring
+     5.4.  Retroactive Supersede
+   6.  Properties and Trade-Offs
+     6.1.  Reactive Congestion Detection
+     6.2.  No Absolute Bitrate Floor
+     6.3.  Single Switching Set Scope
+   7.  Implementation Status
+   8.  Security Considerations
+     8.1.  Inaccurate Throughput Thresholds Cannot Starve a Track
+     8.2.  Subscriber Manipulation of Flow Control or Parameters
+     8.3.  Resource Cost of the Signals
+   9.  IANA Considerations
+     9.1.  SSTS Algorithm Registration
+   10. References
+     10.1.  Normative References
+     10.2.  Informative References
+   Authors' Addresses
+
+1.  Introduction
+
+   Sender-Side Track Switching (SSTS) [SSTS] lets a subscriber group
+   several encodings of the same content into a _switching set_ and
+   hands the choice of which encoding to forward to the publisher,
+   typically a relay.  The publisher forwards one member of the set at a
+   time and dynamically switches between members as path conditions
+   change.  Which member it picks is not fixed by SSTS: the
+   SWITCHING_SET_ASSIGNMENT parameter names an _algorithm_, and each
+   algorithm defines its own fields, its own publisher behavior, and its
+   own subscriber behavior.
+
+   The default algorithm defined in [SSTS] is an allocation algorithm.
+   It starts from B_total, an estimate of the downstream bandwidth
+   available to the subscriber's connection, divides it between
+   switching sets by rank and weight, and selects, in each set, the
+   highest member whose declared throughput threshold fits the share the
+   set received.
+
+   That design assumes two inputs the publisher may not have:
+
+   *  A bandwidth estimate with a usable timebase.  The estimate is
+      obtained from the transport stack, and what a transport stack can
+      offer is a congestion controller's view of the recent past: a
+      congestion window, a pacing rate, a smoothed round-trip time
+      [RFC9002].  On a connection that is not sending at capacity --
+      which is the normal state of a relay -- that view is bounded by
+      what was sent, not by what could have been sent, so the estimate
+      tends to confirm the tier already in use rather than reveal the
+      next one up.  Measuring the headroom, rather than inferring it,
+      requires sending data, which is a separate mechanism [Probing].
+
+   *  Sensitivity to absolute threshold calibration.  Comparing a
+      transport rate estimate directly against subscriber-declared
+      throughput thresholds requires both numbers to share a well-
+      calibrated absolute scale.  If a track's actual bitrate fluctuates
+      above its declared threshold (e.g., during complex video scenes),
+      an estimate-driven selector may continue forwarding a track that
+      is already building a queue at the transport layer.
+
+   This document defines an algorithm that needs neither.  Rather than
+   asking the transport stack what rate the path might support, the
+   publisher counts how many forwarding streams carrying the currently
+   selected tier remain open and unconsumed.  An accumulating stream
+   depth is direct evidence of overrun on the connection.
+
+   The cost of using evidence instead of inference is that the evidence
+   arrives late.  A bandwidth estimate can suggest that a higher tier
+   would fit before anything is sent at that tier; backpressure can only
+   report that the tier currently in use does not fit, after a group has
+   already been delayed.  The algorithm in this document is therefore
+   conservative by construction: it starts at the lowest tier, climbs
+   only on a streak of healthy groups, and drops on the first sign of a
+   queue.  An earlier version of this SSTS algorithm has been evaluated
+   in [MMSP26].
+
+1.1.  Scope
+
+   This document defines one SSTS algorithm designed for a single active
+   switching set per connection.  Concurrent adaptation across multiple
+   active switching sets on the same connection is not supported by this
+   specification; subscribers with multiple switching sets SHOULD assign
+   at most one switching set to this algorithm and use an allocation
+   algorithm (such as the default algorithm of [SSTS]) for any others.
+   This document does not change the SSTS extension itself: negotiation,
+   the SWITCHING_SET_ASSIGNMENT parameter, the rules for forming and
+   modifying switching sets, and the default algorithm defined in [SSTS]
+   are unaffected.
+
+2.  Conventions and Definitions
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and
+   "OPTIONAL" in this document are to be interpreted as described in
+   BCP 14 [RFC2119] [RFC8174] when, and only when, they appear in all
+   capitals, as shown here.
+
+   This document uses the terms Track, Group, Object, Subgroup,
+   publisher, subscriber and relay as defined in [MoQTransport], and the
+   terms switching set, member and algorithm as defined in [SSTS].  In
+   addition:
+
+   Ladder:  The members of one switching set, ordered by ascending
+      throughput threshold.  Position 0 is the lowest-quality member.
+
+   Tier:  An integer index into the switching set's ladder, in the range
+      0 to i_max.
+
+   Nominal Tier Rate (R[i]):  The declared throughput threshold of the
+      track at tier i of the ladder.
+
+   Forwarding stream:  A unidirectional QUIC stream the publisher has
+      opened toward the subscriber to carry Objects of a Subgroup of a
+      member of a switching set, and that has neither been closed nor
+      reset.  A stream still draining its last Object is open.
+
+   Replacement stream:  A forwarding stream opened during a retroactive
+      supersede (Section 5.4) to re-send an in-flight Group at a lower
+      tier after canceling the higher-tier stream.
+
+   Active stream depth (d):  The number of currently open forwarding
+      streams carrying the track selected at the current tier i,
+      excluding replacement streams (Section 5.2).
+
+3.  Algorithm Overview
+
+   For a switching set assigned to this algorithm, the publisher orders
+   the member tracks into a ladder of tiers 0 to i_max by ascending
+   throughput threshold and maintains a current tier index i,
+   initialized to 0.
+
+   The adaptation controller evaluates the active stream depth d across
+   two execution paths:
+
+   1.  *Group boundary evaluations:* When the publisher begins
+       forwarding a new Group (a Group ID greater than the largest Group
+       ID previously evaluated), it checks whether the transport path is
+       clear: the active stream depth is within target (d <= D_target,
+       where D_target is 1 by default), no replacement stream from a
+       previous supersede is still in flight, and the next tier up (i +
+       1) has no open forwarding stream still draining (Section 5.2).
+
+       *  During *Fast Start* (exploring = true), each clear Group
+          boundary immediately advances the tier by one (i = i + 1) so
+          the session can discover available capacity rapidly.  Fast
+          start ends permanently as soon as congestion is detected (d >=
+          D_down, where D_down is 2 by default) or when i reaches i_max.
+
+       *  During *Steady-State Regulation* (exploring = false), the
+          publisher advances from tier i to i + 1 only after observing
+          U(i) consecutive clear Group boundaries.  U(i) scales
+          dynamically with the fractional bitrate increase (R[i+1] -
+          R[i]) / R[i] and the subscriber's probing risk tolerance rho,
+          bounded by U_min and U_max.  If d >= D_down at a Group
+          boundary, the publisher immediately steps down one tier (i =
+          max(i - 1, 0)) and, when Retroactive supersede is enabled,
+          triggers a retroactive supersede.
+
+   2.  *Intra-group monitoring:* Waiting for the next Group boundary to
+       react to a sudden bandwidth drop can stall playback.  Whenever an
+       Object is forwarded within an ongoing Group during steady state,
+       the publisher checks d.  A single reading of d >= D_down is
+       tolerated to allow brief handoff overlap between consecutive
+       Groups, but if d >= D_down persists for M consecutive Object
+       transmissions, the publisher immediately steps down one tier mid-
+       Group and, when Retroactive supersede is enabled, triggers a
+       retroactive supersede.
+
+   Whenever a downshift occurs (i < i_prev) and Retroactive supersede is
+   enabled, *Retroactive Supersede* (Section 5.4) clears queued higher-
+   bitrate bytes from the path by resetting the newest overtaken in-
+   flight stream with the MOQT Cancelled error code and re-sending that
+   Group on a new stream using the newly selected lower-tier track,
+   prepending cached Objects from the start of the Subgroup and
+   inheriting the remaining client latency budget.
+
+4.  Negotiation and Assignment
+
+4.1.  Negotiation
+
+   Support for this algorithm is advertised in the SSTS_ALGORITHMS Setup
+   Option of [SSTS] by including the algorithm identifier allocated in
+   Section 9.1.  An endpoint that does not advertise the identifier MUST
+   NOT be sent a SWITCHING_SET_ASSIGNMENT naming it; a publisher that
+   receives one for an algorithm it did not advertise follows the error
+   handling of [SSTS].
+
+4.2.  SWITCHING_SET_ASSIGNMENT Fields
+
+   This algorithm extends the base SWITCHING_SET_ASSIGNMENT parameter of
+   [SSTS] with the fields of the default algorithm ([SSTS], Section 6.1)
+   followed by five adaptation parameters:
+
+   SWITCHING_SET_ASSIGNMENT {
+     Switching set ID (vi64),
+     Algorithm ID (vi64),
+     Throughput threshold (vi64),
+     Set throughput weight (vi64),
+     Activate switching (vi64),
+     Set rank (8),
+     Latency budget B (vi64),
+     Probing risk factor rho_pct (vi64),
+     Upshift min streak U_min (vi64),
+     Upshift max streak U_max (vi64),
+     Retroactive supersede (vi64)
+   }
+
+   The fields are interpreted as follows:
+
+   *  *Throughput threshold:* The nominal bitrate of this track in kbps.
+      Unlike the default algorithm of [SSTS], this value is never
+      compared against an estimated connection bandwidth B_total.
+      Instead, it is used for two relative calculations:
+
+      1.  Ordering the members within the switching set's ladder (R[0]
+          <= R[1] <= ... <= R[i_max]); and
+
+      2.  Computing the relative step ratio (R[i+1] - R[i]) / R[i] in
+          the dynamic upshift streak formula (Section 5.3).  If two
+          members of a switching set declare the same throughput
+          threshold, the publisher MUST break the tie deterministically
+          (for example, by order of assignment arrival) and keep the
+          order stable while both members remain in the set.
+
+   *  *Set throughput weight:* Expressed as an integer N in the range 1
+      to 10 as defined in [SSTS].  Because this algorithm operates on a
+      single switching set per connection and does not divide a
+      bandwidth budget across sets, the publisher parses this field for
+      wire compatibility with [SSTS] Section 6.1 and ignores its value.
+
+   *  *Activate switching:* As defined in [SSTS].  When 0, switching is
+      paused for the set.  When N, the publisher activates switching for
+      the set once at least N tracks in the set have active
+      subscriptions.
+
+   *  *Set rank:* Expressed as an 8-bit unsigned integer (0-255) as
+      defined in [SSTS].  The publisher parses this field for wire
+      compatibility with [SSTS] Section 6.1 and ignores its value.
+
+   *  *Latency budget (B):* The subscriber's reorder/jitter buffer
+      budget in milliseconds.  Any in-flight forwarding stream that
+      remains open for longer than B milliseconds without completing is
+      reset by the publisher (Group discarded).  When retroactive
+      supersede replaces an overtaken stream of age t_age, the
+      replacement stream inherits a remaining deadline of T_resend =
+      max(1, B - t_age) ms.  Setting B = 0 designates a latency-
+      insensitive profile where delivery timeout resets are disabled and
+      the publisher performs lossless forwarding without drop deadlines.
+
+   *  *Probing risk factor (rho_pct):* The probing risk tolerance rho (0
+      < rho <= 1), encoded as an integer percentage rho_pct.  A value of
+      0 selects the publisher default (25, corresponding to rho = 0.25),
+      1..100 are explicit percentages, and values greater than 100 MUST
+      be clamped to 100.  Larger values climb more aggressively across
+      large bitrate jumps; smaller values require longer observation
+      streaks.
+
+   *  *Upshift min streak (U_min):* The minimum number of consecutive
+      uncongested Group boundaries required before stepping up one tier
+      in steady state.  When set to 0 (unset) or set below 2, the
+      publisher clamps U_min to a minimum of 2 to ensure stability, with
+      a default U_default = 2.
+
+   *  *Upshift max streak (U_max):* The upper bound on the number of
+      consecutive uncongested Group boundaries required before stepping
+      up one tier in steady state.  When set to 0 (unset), the publisher
+      leaves U_max unbounded (no upper cap is enforced).  If U_max > 0
+      and U_max < U_min, the publisher MUST set U_max = U_min.  A
+      subscriber can enforce a static upshift interval of K Groups
+      (bypassing rho) by setting U_min = U_max = K.
+
+   *  *Retroactive supersede:* Controls whether the publisher performs
+      retroactive supersede (Section 5.4) upon a downshift.  When set to
+      1, a downshift cancels the newest overtaken in-flight stream and
+      re-sends the affected Subgroup from its beginning at the newly
+      selected lower tier.  Unlike rho_pct, U_min, and U_max, a value of
+      0 does not select a default; when set to 0, retroactive supersede
+      is disabled: in-flight Groups are not canceled and continue to
+      completion on the track they started on, while the lowered tier i
+      takes effect at the next new Group boundary.  Any non-zero value
+      is treated as 1.
+
+   When multiple subscriptions in the same switching set specify
+   different values for any set-level field (Activate switching, Latency
+   budget, Probing risk factor, Upshift min streak, Upshift max streak,
+   or Retroactive supersede), the publisher MUST use the value from the
+   most recently received message for that set.
+
+4.3.  Subscriber Behavior
+
+   The subscriber follows the general rules of [SSTS] for establishing
+   and modifying switching sets, adding or removing tracks, and pausing
+   or resuming switching via Activate switching.
+
+   A subscriber MUST NOT assign more than one active switching set per
+   connection to this algorithm.  If a subscriber uses multiple
+   switching sets on the same connection, it SHOULD assign at most one
+   switching set (typically video) to this algorithm and assign the
+   remaining switching sets to an algorithm that allocates bandwidth
+   across sets, such as the default algorithm of [SSTS].  In particular,
+   constant-bitrate or low-bitrate media such as audio SHOULD be
+   subscribed as ordinary MOQT tracks or assigned to another algorithm
+   rather than occupying the single switching set governed by this
+   algorithm.  If a publisher nevertheless receives a
+   SWITCHING_SET_ASSIGNMENT assigning an additional active switching set
+   on the same connection to this algorithm, it SHOULD reject the
+   assignment or leave the additional set inactive.
+
+   When configuring the adaptation parameters in Section 4.2, it is
+   RECOMMENDED that the subscriber leave Upshift min streak (U_min) and
+   Upshift max streak (U_max) unset (0) and adjust upshift sensitivity
+   solely using Probing risk factor (rho).  A subscriber that requires a
+   fixed upshift interval of K clear Groups (K >= 2) regardless of the
+   relative bitrate step size MAY bypass rho by setting U_min = U_max =
+   K.
+
+   A subscriber whose media pipeline cannot discard partially buffered
+   Groups and replace them with a re-sent Subgroup stream MUST set
+   Retroactive supersede to 0 in SWITCHING_SET_ASSIGNMENT (Section 4.2).
+   When Retroactive supersede is enabled (1), the publisher aborts the
+   overtaken in-flight forwarding stream with a QUIC RESET_STREAM and
+   opens a replacement stream for the same Group ID on the newly
+   selected lower-tier track, starting from the beginning of the
+   affected Subgroup.  Upon receiving a RESET_STREAM carrying the MOQT
+   Cancelled error code on a stream belonging to the switching set -- or
+   upon receiving a new forwarding stream for the same Group ID on a
+   different member track of the switching set -- the subscriber MUST
+   discard any Objects already buffered from the canceled higher-tier
+   stream that have not yet been passed to the decoder, and MUST instead
+   buffer and decode the Objects arriving on the replacement stream from
+   the beginning of the Subgroup so that inter-frame decoder state
+   remains valid.  For any Object position that has already been
+   presented prior to the switch, the subscriber MUST decode the
+   replacement Object without rendering it; it MUST NOT present the same
+   Object position twice.
+
+5.  Publisher Behavior
+
+5.1.  Ladder Construction
+
+   For the active switching set assigned to this algorithm, the
+   publisher orders its member tracks into a ladder L = [m[0], m[1],
+   ..., m[i_max]] sorted by ascending declared throughput threshold R[0]
+   <= R[1] <= ... <= R[i_max].
+
+   Whenever a track is added to or removed from the switching set, the
+   publisher recomputes the ladder and sets the current tier index i to
+   the highest tier whose nominal rate R[i] does not exceed the nominal
+   rate of the previously selected track (clamped to the range 0 to
+   i_max).
+
+5.2.  Signals
+
+   The publisher scopes its congestion signal strictly to the currently
+   active tier i of the switching set controlled by this algorithm.
+
+   For any tier j of the switching set, let ordinary_open_streams(j) be
+   the number of currently open forwarding streams carrying track m[j]
+   that were *not* opened as replacement streams by a retroactive
+   supersede (Section 5.4).  The counter is incremented when the
+   publisher opens an ordinary forwarding stream for m[j] and
+   decremented when that stream closes, is reset by the publisher, or is
+   stopped by the subscriber (STOP_SENDING).  Similarly, let
+   open_replacement_streams be the number of currently open replacement
+   streams for the switching set, incremented when a replacement stream
+   is opened during a retroactive supersede and decremented when it
+   closes, is reset, or is stopped.  Streams belonging to tracks outside
+   the switching set (such as an ordinary audio subscription) MUST NOT
+   be counted in either counter.
+
+   The active stream depth d evaluated by the state machine is:
+
+   d = ordinary_open_streams(i)
+
+   Isolating d to the active tier i and excluding replacement streams
+   has two important properties:
+
+   *  *No cooldown state required:* When the publisher steps down from
+      tier i_prev to a lower tier i, any streams still draining from
+      i_prev (or older tiers) are not counted in d at tier i.  The
+      controller evaluates whether the new tier i is sustainable on its
+      own merits without cascading downshifts from historical
+      congestion.
+
+   *  *No separate timeout counter required:* Streams that expire due to
+      the latency budget B are symptoms of queue accumulation that has
+      already raised d to or above D_down.  Filtering timeout events out
+      of d avoids double-penalizing the tier after a downshift has
+      already taken place.
+
+   Because d is scoped strictly to ordinary forwarding streams at the
+   current tier i, d <= D_target alone does not guarantee that the
+   pipeline is clear to step up to tier i + 1.  The publisher therefore
+   combines d <= D_target with two boolean climb guards when evaluating
+   whether a Group boundary is clear:
+
+   *  *Repair in flight (resent_in_flight):* True when at least one
+      replacement stream opened by a previous retroactive supersede
+      (Section 5.4) is still open for the switching set
+      (open_replacement_streams > 0).  Because replacement streams are
+      excluded from d so a downshift cannot trigger a second downshift,
+      an open replacement stream cannot be counted as a clear boundary
+      either: until the repair finishes, the overtaken delivery has not
+      resolved.
+
+   *  *Target rung occupied (target_occupied):* True when i < i_max and
+      ordinary_open_streams(i + 1) > 0 (at least one ordinary forwarding
+      stream is still open at the next tier up).  An old stream draining
+      at tier i + 1 is not congestion at tier i and MUST NOT trigger a
+      downshift, but stepping up to tier i + 1 while that stream is
+      still open would immediately combine the new Group's stream with
+      the lingering one (d >= 2) and force an immediate downshift.  At
+      the top of the ladder (i = i_max), target_occupied is false.
+
+   A Group boundary is considered _clear_ if and only if d <= D_target,
+   resent_in_flight is false, and target_occupied is false.  When d <=
+   D_target but either guard is true, the boundary is neither clear nor
+   congested: clear_streak and monitor_streak are reset to 0, and the
+   current tier i and exploring state are held unchanged.
+
+5.3.  State Machine and Adaptation Logic
+
+   In addition to the per-tier ordinary_open_streams(j) counters and the
+   switching set's validated parameters (rho in (0, 1], U_min >= 2,
+   U_max set to 0 or >= U_min, B, and retroactive_supersede from
+   Section 4.2), the publisher maintains the following state for the
+   switching set:
+
+i                        : integer, initially 0    ; current tier
+exploring                : boolean, initially true ; fast-start exploration flag
+clear_streak             : integer, initially 0    ; consecutive clear Groups
+monitor_streak           : integer, initially 0    ; consecutive congested Objects
+g_last                   : integer or none         ; largest Group ID evaluated
+open_replacement_streams : integer, initially 0    ; open supersede streams
+                                                   ;   for this switching set
+
+   The internal threshold constants have the following default values:
+
+   D_target = 1  ; max active streams considered clear
+   D_down   = 2  ; active streams indicating overlap/queuing
+   M        = 3  ; consecutive intra-group samples with d >= D_down
+                 ; required to trigger a mid-group downshift
+
+   The controller runs on two events: when the first Object of a new
+   Group g is about to be forwarded (is_new_group is true when g_last ==
+   none or g > g_last), and when a subsequent Object of an active Group
+   is about to be forwarded (is_new_group is false).
+
+on_object_forward(g):
+  d = ordinary_open_streams(i)
+  resent_in_flight = (open_replacement_streams > 0)
+  target_occupied = (i < i_max) and (ordinary_open_streams(i + 1) > 0)
+  i_prev = i
+  is_new_group = (g_last == none or g > g_last)
+
+  if is_new_group:                          ; 1. Group boundary evaluation
+    g_last = g
+    is_clear = (d <= D_target) and (not resent_in_flight) and (not target_occupied)
+
+    if is_clear:                            ; Clear: eligible to climb
+      monitor_streak = 0
+      clear_streak = clear_streak + 1
+      if i < i_max:
+        step_ratio = 1.0 if R[i] == 0 else (R[i + 1] - R[i]) / R[i]
+        U_i = max( U_min, ceil( step_ratio / rho ) )
+        if U_max > 0:
+          U_i = min( U_max, U_i )
+      else:
+        U_i = 2
+      needed = 1 if exploring else U_i
+      if clear_streak >= needed:
+        i = min( i + 1, i_max )
+        clear_streak = 0
+        if exploring and i >= i_max:
+          exploring = false
+    else if d >= D_down:                    ; Congested: downshift
+      clear_streak = 0
+      monitor_streak = 0
+      exploring = false
+      i = max( i - 1, 0 )
+    else:                                   ; Guarded (or D_target < d < D_down):
+      clear_streak = 0                      ;   hold tier, reset streaks
+      monitor_streak = 0
+
+  else:                                     ; 2. Intra-group monitor
+    if d >= D_down:
+      monitor_streak = monitor_streak + 1
+    else:
+      monitor_streak = 0
+
+    if (not exploring) and i > 0 and monitor_streak >= M:
+      i = i - 1
+      monitor_streak = 0
+      clear_streak = 0
+
+  downshifted = (i < i_prev)
+
+  if downshifted and retroactive_supersede == 1: ; 3. Retroactive supersede
+    trigger_retroactive_supersede(i, i_prev)     ; if s_last > i and cache exist,
+                                                 ; cancels s_last and opens a
+                                                 ; replacement stream at tier i
+                                                 ; with Subgroup Objects 0..N-1
+
+  if is_new_group:                          ; 4. Forward current Object
+    open ordinary forwarding stream for Group g on track m[i]
+    forward current Object on Group g's new stream
+  else if a replacement stream is open for Group g:
+    forward current Object on Group g's replacement stream
+  else:
+    forward current Object on Group g's existing stream
+
+5.3.1.  Fast Start (exploring = true)
+
+   At the start of a session, exploring is true and i = 0.  At each
+   clear Group boundary (d <= D_target with both resent_in_flight and
+   target_occupied false), the required streak is needed = 1, allowing
+   the tier to climb by one rung per Group boundary without waiting for
+   multi-Group observation windows.  During fast start, the intra-group
+   monitor is disarmed (not exploring is false) so that each newly
+   probed tier is tested across at least one complete Group
+   transmission.  Fast start terminates permanently (exploring = false)
+   as soon as d >= D_down is observed at a Group boundary or when i
+   reaches i_max.
+
+5.3.2.  Steady-State Regulation (exploring = false)
+
+   Once fast start ends, advancing from tier i to tier i + 1 requires
+   U(i) consecutive clear Group boundaries (d <= D_target with both
+   resent_in_flight and target_occupied false), where:
+
+   U(i) = max(2, U_min, ceil((R[i+1] - R[i]) / (R[i] * rho)))
+
+   When U_max is greater than 0, the computed value is reduced to U_max
+   if it exceeds U_max.
+
+   Here (R[i+1] - R[i]) / R[i] is the fractional increase in nominal
+   bitrate required by the next ladder tier.  A step that doubles the
+   bitrate requires twice the observation window of a step that
+   increases the bitrate by 50%. If R[i] = 0, the publisher treats the
+   step ratio as 1.0.
+
+   Conversely, if d >= D_down at any Group boundary, the publisher
+   immediately steps down to max(i - 1, 0), resets clear_streak and
+   monitor_streak to 0, and, when Retroactive supersede is enabled,
+   initiates a retroactive supersede (Section 5.4).
+
+5.3.3.  Intra-Group Monitoring
+
+   Waiting for the next Group boundary to adapt can leave a congested
+   stream blocking the connection when path capacity drops mid-Group.
+   During steady state (exploring = false), the publisher evaluates d
+   prior to forwarding each Object within a Group.  Because a brief
+   overlap (d = 2) can occur naturally during the handoff between the
+   last Object of Group g - 1 and the first Object of Group g, a single
+   reading of d >= D_down is tolerated.  If d >= D_down persists for M
+   consecutive Object forwarding events while i > 0, the publisher
+   immediately decrements i by 1, resets both streak counters, and, when
+   Retroactive supersede is enabled, executes a retroactive supersede
+   (Section 5.4).
+
+5.4.  Retroactive Supersede
+
+   A purely forward-looking downshift that only takes effect on the
+   _next_ Group leaves the currently in-flight Group at the higher tier
+   queued in the transport send buffer, prolonging congestion.  To
+   evacuate those queued bytes immediately, whenever a decision lowers
+   the tier (i < i_prev) and Retroactive supersede is enabled (1,
+   Section 4.2), the publisher performs a _retroactive supersede_ on the
+   switching set:
+
+   1.  *Locate and cancel the overtaken stream:* The publisher
+       identifies the newest in-flight forwarding stream s_last for the
+       switching set that is carrying a track from a tier higher than i
+       and that still has unsent Objects or bytes remaining in the
+       transport send buffer yet to be transmitted on the wire (a stream
+       whose bytes have all left the send buffer and is merely awaiting
+       acknowledgment or closure is left to finish).  If no such stream
+       s_last exists, or if the cached beginning of the affected
+       Subgroup on track m[i] is unavailable, steps 2-4 are skipped.
+       Otherwise, the publisher aborts s_last by sending a QUIC
+       RESET_STREAM frame with the MOQT Cancelled error code.
+
+   2.  *Open a replacement stream at tier i:* The publisher opens a new
+       unidirectional QUIC stream for the same Group ID using the track
+       newly selected at tier i, writes the Subgroup header, and
+       prepends the affected Subgroup's initial Objects 0 to N - 1 of
+       track m[i] from the relay's object cache (where N is the number
+       of Objects already dispatched on s_last), followed by subsequent
+       live Objects of that Subgroup as they arrive.  If the relay has
+       already received the remaining Objects of the Subgroup and no
+       further live Objects will arrive, it replays those cached Objects
+       as well.
+
+   3.  *Inherit the remaining latency budget:* Let t_age be the elapsed
+       time in milliseconds since s_last was originally opened.  If the
+       subscriber configured a non-zero latency budget B > 0
+       (Section 4.2), the publisher assigns the replacement stream a
+       delivery timeout of T_resend = max(1, B - t_age).  If B = 0, no
+       delivery timeout deadline is applied to the replacement stream.
+
+   4.  *Mark as replacement and exclude from d:* The replacement stream
+       is marked as a re-sent stream: it increments
+       open_replacement_streams while open (setting resent_in_flight)
+       and MUST NOT be counted in ordinary_open_streams(j) for any tier
+       j (Section 5.2), ensuring that replacing an overtaken Group does
+       not artificially inflate d or target_occupied.
+
+   When Retroactive supersede is disabled (0), the publisher skips steps
+   1-4 above: any Group already in flight continues to be forwarded on
+   the track selected when that Group started, and the newly lowered
+   tier i is applied starting with the next new Group.  Because the
+   still-draining stream at the higher tier sets target_occupied
+   (Section 5.2), the state machine is automatically prevented from
+   stepping back up into that tier until the in-flight Group finishes
+   draining.
+
+6.  Properties and Trade-Offs
+
+6.1.  Reactive Congestion Detection
+
+   Because active stream depth measures unconsumed streams rather than
+   estimating path capacity in advance, congestion is detected only
+   after a Group has begun to overlap with the next Group (d >= D_down).
+   Retroactive supersede (Section 5.4) mitigates the latency penalty of
+   late detection by aborting the stalled high-bitrate stream and
+   replacing it with a lower-bitrate encoding within the remaining
+   latency budget B, provided the relay holds the earlier Objects of
+   that Group in its cache.
+
+6.2.  No Absolute Bitrate Floor
+
+   The algorithm never falls below tier 0.  If the path cannot sustain
+   even the lowest-bitrate member (tier 0) of the ladder, streams at
+   tier 0 will exceed the latency budget B and be reset on delivery
+   timeout, while the publisher continues attempting to forward tier 0.
+   Deciding to terminate a subscription entirely when tier 0 is
+   unsustainable is a publisher policy decision outside the scope of
+   this algorithm.
+
+6.3.  Single Switching Set Scope
+
+   This algorithm adapts a single switching set per connection.  Because
+   backpressure is observed as open forwarding streams rather than an
+   explicit bandwidth rate B_total, the signal reports whether the
+   currently selected track fits the path, but does not produce a
+   divisible bitrate figure that can be partitioned across multiple
+   independent switching sets by rank and weight.  Subscribers that
+   require concurrent adaptation across multiple switching sets on the
+   same connection SHOULD use an allocation algorithm such as the
+   default algorithm of [SSTS].
+
+7.  Implementation Status
+
+   _This section is to be removed before publishing as an RFC, per
+   [RFC7942]._
+
+   An experimental implementation of the algorithm described in this
+   document has been developed for the MOQtail relay [MOQtail].  It
+   covers Section 5.1, Section 5.2, Section 5.3, and Section 5.4 for a
+   single switching set, including cached object replay and the
+   inherited re-send deadline.  The prototype currently differs from
+   this specification in two respects.  First, rather than exposing a
+   single algorithm identifier whose supersede behavior is toggled by
+   the Retroactive supersede field in SWITCHING_SET_ASSIGNMENT
+   (Section 4.2), it registers the supersede and non-supersede modes as
+   two separate provisional algorithm identifiers from the private-use
+   range pending the allocation requested in Section 9.1; consequently,
+   the Retroactive supersede field value is not yet acted on even though
+   the wire codec parses the trailing extension fields.  Second, it does
+   not yet reject a second active switching set.  An earlier version of
+   this SSTS algorithm has been evaluated in [MMSP26], and the current
+   prototype has also been evaluated against the MOQtail publisher and
+   subscriber; interoperability with other SSTS implementations has not
+   yet been tested.
+
+8.  Security Considerations
+
+   This document defines an algorithm for an existing MOQT extension and
+   inherits the security considerations of [MoQTransport] and [SSTS],
+   including the asymmetric resource exhaustion that switching set fan-
+   out makes easier.  The considerations below are those that differ
+   from the default algorithm.
+
+8.1.  Inaccurate Throughput Thresholds Cannot Starve a Track
+
+   In the default algorithm of [SSTS], a track whose declared throughput
+   threshold exceeds the publisher's bandwidth estimate B_total is never
+   selected.  Under the algorithm defined in this document, throughput
+   thresholds are used only for ladder ordering and relative step size
+   calculation (R[i+1] - R[i]) / R[i].  A miscalibrated absolute
+   threshold cannot permanently prevent the algorithm from probing a
+   higher tier once the transport queue is clear, and if the probed tier
+   exceeds actual path capacity, stream depth d rises and forces a
+   downshift regardless of what bitrate was declared.
+
+8.2.  Subscriber Manipulation of Flow Control or Parameters
+
+   A subscriber that intentionally withholds QUIC flow control credit or
+   stops reading from forwarding streams causes d to rise, forcing the
+   publisher down to tier 0.  Because tier state is isolated per
+   connection, a slow subscriber only degrades its own quality and
+   causes the publisher to send it _fewer_ bytes.
+
+   Conversely, a subscriber that signals an aggressive probing risk
+   factor (rho_pct = 100, U_min = 2) can cause the publisher to probe
+   upward more frequently, triggering more frequent retroactive
+   supersedes.  Each retroactive supersede cancels an existing stream
+   and re-sends cached Objects at a lower bitrate.  Publishers SHOULD
+   bound the rate of retroactive supersedes (for example, at most one
+   supersede per Group ID per switching set) so that repeated downshifts
+   within a single Group do not cause excessive cache reads or stream
+   churn.
+
+8.3.  Resource Cost of the Signals
+
+   The state and stream counter the publisher keeps (Section 5.2,
+   Section 5.3) are bounded and freed with the connection.  There are no
+   process-wide tables keyed by subscriber identity, and no state that
+   outlives a subscription, so a subscriber cannot cause unbounded
+   memory growth at the publisher by repeatedly creating and destroying
+   switching sets.  Publishers SHOULD nevertheless bound the number of
+   switching sets and members per connection, as recommended by [SSTS].
+
+9.  IANA Considerations
+
+9.1.  SSTS Algorithm Registration
+
+   IANA is requested to add the following entry to the "SSTS-Algorithms"
+   registry established by [SSTS]:
+
+                  +======+==============+===============+
+                  | Type | Name         | Specification |
+                  +======+==============+===============+
+                  |  TBD | Backpressure | This document |
+                  +------+--------------+---------------+
+
+                                  Table 1
+
+10.  References
+
+10.1.  Normative References
+
+   [MoQTransport]
+              Nandakumar, S., Vasiliev, V., Swett, I., and A. Frindell,
+              "Media over QUIC Transport", Work in Progress, Internet-
+              Draft, draft-ietf-moq-transport-22, 1 October 2026,
+              <https://datatracker.ietf.org/doc/html/draft-ietf-moq-
+              transport-22>.
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119,
+              DOI 10.17487/RFC2119, March 1997,
+              <https://www.rfc-editor.org/rfc/rfc2119>.
+
+   [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase in RFC
+              2119 Key Words", BCP 14, RFC 8174, DOI 10.17487/RFC8174,
+              May 2017, <https://www.rfc-editor.org/rfc/rfc8174>.
+
+   [SSTS]     Law, W., Swett, I., Nandakumar, S., Zanaty, M., Vasiliev,
+              V., Begen, A., Gurel, Z., and G. Simon, "Sender-Side Track
+              Switching", 2026, <https://github.com/wilaw/moqt-
+              ssts/blob/main/draft-wilaw-moq-moqt-ssts.md>.
+
+10.2.  Informative References
+
+   [MMSP26]   Zengin, A. F., Gurel, Z., and A. C. Begen, "Relay-Side
+              Latency-Budget-Aware Rate Adaptation in MOQ Transport",
+              IEEE Proc. IEEE Int. Workshop on Multimedia Signal
+              Processing (MMSP), 2026.
+
+   [MOQtail]  Gurel, Z., Ugur, D., and A. C. Begen, "MOQtail: open-
+              source, IETF-compliant MOQT protocol libraries", ACM Proc.
+              ACM Multimedia Systems Conf. (MMSys), Hong Kong,
+              DOI 10.1145/3793853.3799817, April 2026,
+              <https://doi.org/10.1145/3793853.3799817>.
+
+   [Probing]  Gürel, Z., Begen, A. C., and D. Ugur, "Probe Tracks for
+              Bandwidth Estimation in Media over QUIC Transport", Work
+              in Progress, Internet-Draft, draft-gurel-moq-probing-00,
+              12 October 2026, <https://datatracker.ietf.org/doc/html/
+              draft-gurel-moq-probing-00>.
+
+   [RFC7942]  Sheffer, Y. and A. Farrel, "Improving Awareness of Running
+              Code: The Implementation Status Section", BCP 205,
+              RFC 7942, DOI 10.17487/RFC7942, July 2016,
+              <https://www.rfc-editor.org/rfc/rfc7942>.
+
+   [RFC9002]  Iyengar, J., Ed. and I. Swett, Ed., "QUIC Loss Detection
+              and Congestion Control", RFC 9002, DOI 10.17487/RFC9002,
+              May 2021, <https://www.rfc-editor.org/rfc/rfc9002>.
+
+Authors' Addresses
+
+   Alperen Fatih Zengin
+   Ozyegin University
+   Email: fatih.zengin@ozu.edu.tr
+
+
+   Zafer Gurel
+   Ozyegin University
+   Email: zafer.gurel@ozu.edu.tr
+
+
+   Ali C. Begen
+   Networked Media
+   Email: ali.begen@networked.media
+
+
+   Deniz Ugur
+   Ozyegin University
+   Email: deniz.ugur@ozu.edu.tr

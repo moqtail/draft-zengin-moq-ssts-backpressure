@@ -1,0 +1,2242 @@
+<!DOCTYPE html>
+<html lang="en" class="Internet-Draft">
+<head>
+<meta charset="utf-8">
+<meta content="Common,Latin" name="scripts">
+<meta content="initial-scale=1.0" name="viewport">
+<title>A Backpressure Algorithm for Sender-Side Track Switching in MOQ Transport</title>
+<meta content="Alperen Fatih Zengin" name="author">
+<meta content="Zafer Gurel" name="author">
+<meta content="Ali C. Begen" name="author">
+<meta content="Deniz Ugur" name="author">
+<meta content="
+       Sender-Side Track Switching (SSTS) lets a publisher forward one track at a
+time out of a switching set, and leaves the choice of which track to a
+pluggable algorithm. The default algorithm divides a bandwidth estimate
+between switching sets. This document defines an alternative algorithm that
+uses no bandwidth estimate at all. It monitors the number of open forwarding
+streams carrying the currently active tier, steps rapidly through the
+switching set's ladder during fast start, regulates steady-state upshifts
+dynamically according to relative bitrate jumps and the subscriber's
+probing risk tolerance, and reacts to mid-group congestion using
+intra-group monitoring and retroactive stream supersede. The signal
+is directly observable at the publisher, requires no cooperation from
+the congestion controller, and degrades toward the lowest quality under
+load rather than toward none. 
+    " name="description">
+<meta content="xml2rfc 3.34.1" name="generator">
+<meta content="Internet-Draft" name="keyword">
+<meta content="sender-side track switching" name="keyword">
+<meta content="backpressure" name="keyword">
+<meta content="adaptive bitrate" name="keyword">
+<meta content="relay" name="keyword">
+<meta content="draft-zengin-moq-ssts-backpressure-latest" name="ietf.draft">
+<!-- Generator version information:
+  xml2rfc 3.34.1
+    Python 3.14.8
+    ConfigArgParse 1.8.0
+    google-i18n-address 3.1.1
+    intervaltree 3.2.1
+    Jinja2 3.1.6
+    lxml 6.1.1
+    natsort 8.4.0
+    platformdirs 4.13.4
+    pycountry 24.6.1
+    PyYAML 6.0.3
+    requests 2.33.1
+    wcwidth 0.9.2
+-->
+<link href="draft-zengin-moq-ssts-backpressure.xml" rel="alternate" type="application/rfc+xml">
+<link href="#copyright" rel="license">
+<style type="text/css">@font-face {
+  font-family: 'Lora';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Italic'), local('Lora-Italic'), url('https://martinthomson.github.io/rfc-css/fonts/lora-italic-cyrillic-ext.woff2') format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Italic'), local('Lora-Italic'), url('https://martinthomson.github.io/rfc-css/fonts/lora-italic-cyrillic-ext.woff2') format('woff2');
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Italic'), local('Lora-Italic'), url('https://martinthomson.github.io/rfc-css/fonts/lora-italic-vietnamese.woff2') format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Italic'), local('Lora-Italic'), url('https://martinthomson.github.io/rfc-css/fonts/lora-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Italic'), local('Lora-Italic'), url('https://martinthomson.github.io/rfc-css/fonts/lora-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Regular'), local('Lora-Regular'), url('https://martinthomson.github.io/rfc-css/fonts/lora-regular-cyrillic-ext.woff2') format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Regular'), local('Lora-Regular'), url('https://martinthomson.github.io/rfc-css/fonts/lora-regular-cyrillic.woff2') format('woff2');
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Regular'), local('Lora-Regular'), url('https://martinthomson.github.io/rfc-css/fonts/lora-regular-vietnamese.woff2') format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Regular'), local('Lora-Regular'), url('https://martinthomson.github.io/rfc-css/fonts/lora-regular-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Lora Regular'), local('Lora-Regular'), url('https://martinthomson.github.io/rfc-css/fonts/lora-regular-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: local('Lora Bold'), local('Lora-Bold'), url('https://martinthomson.github.io/rfc-css/fonts/lora-bold-cyrillic-ext.woff2') format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: local('Lora Bold'), local('Lora-Bold'), url('https://martinthomson.github.io/rfc-css/fonts/lora-bold-cyrillic.woff2') format('woff2');
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: local('Lora Bold'), local('Lora-Bold'), url('https://martinthomson.github.io/rfc-css/fonts/lora-bold-vietnamese.woff2') format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: local('Lora Bold'), local('Lora-Bold'), url('https://martinthomson.github.io/rfc-css/fonts/lora-bold-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: local('Lora Bold'), local('Lora-Bold'), url('https://martinthomson.github.io/rfc-css/fonts/lora-bold-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: local('Lora SemiBold'), local('Lora-SemiBold'), url('https://martinthomson.github.io/rfc-css/fonts/lora-semibold-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Oxygen Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Oxygen Mono'), local('OxygenMono-Regular'), url('https://martinthomson.github.io/rfc-css/fonts/oxygenmono-regular-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Oxygen Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Oxygen Mono'), local('OxygenMono-Regular'), url('https://martinthomson.github.io/rfc-css/fonts/oxygenmono-regular-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: italic;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-italic-cyrillic-ext.woff2') format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: italic;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-italic-cyrillic.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: italic;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-italic-greek.woff2') format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: italic;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: italic;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: normal;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-regular-cyrillic-ext.woff2') format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: normal;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-regular-cyrillic.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: normal;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-regular-greek.woff2') format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: normal;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-regular-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Sofia Sans Semi Condensed';
+  font-style: normal;
+  font-weight: 1 1000;
+  src: url('https://martinthomson.github.io/rfc-css/fonts/sofiasanssemicondensed-regular-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  color-scheme: light dark;
+  --background-color: #fff;
+  --text-color: #222;
+  --title-color: #191919;
+  --link-color: #2a6496;
+  --highlight-color: #f9f9f9;
+  --line-color: #eee;
+  --pilcrow-weak: #ddd;
+  --pilcrow-strong: #bbb;
+  --small-font-size: 14.5px;
+  --font-mono: 'Oxygen Mono', monospace;
+  --font-title: "Sofia Sans Semi Condensed", sans-serif;
+  scrollbar-color: #bbb #eee;
+}
+body {
+  max-width: 600px;
+  margin: 75px auto;
+  padding: 0 5px;
+  color: var(--text-color);
+  background-color: var(--background-color);
+  font: 16px/22px "Lora", serif;
+  scroll-behavior: smooth;
+}
+
+.ears {
+  display: none;
+}
+
+/* headings */
+section {
+  clear: both;
+}
+.section-number {
+  padding-right: 0.5em;
+}
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-title);
+  font-weight: 680;
+  margin: 0.8em 0 0.3em;
+  font-size-adjust: 0.5;
+  color: var(--title-color);
+}
+h1 {
+  &#title {
+    font-size: 32px;
+    line-height: 40px;
+    clear: both;
+    margin: 1.5em 0 0.2em;
+  }
+  &#rfcnum {
+    margin: 1.5em 0 0.2em;
+    & + h1#title {
+      margin: 0.2em 0;
+    }
+  }
+}
+
+h1, h2, h3 {
+  font-size: 22px;
+  line-height: 27px;
+}
+h4, h5, h6 {
+  font-size: 20px;
+  line-height: 24px;
+}
+
+/* general structure */
+.author {
+  padding-bottom: 0.3em;
+  vertical-align: top;
+}
+#abstract+p {
+  font-size: 18px;
+  line-height: 24px;
+  & code, & samp, & tt {
+    font-size: 16px;
+    line-height: 0;
+  }
+}
+
+p {
+  padding: 0;
+  margin: 0.5em 0;
+  text-align: left;
+}
+div {
+  margin: 0;
+}
+.alignRight {
+  margin: 1em 0;
+  &.art-text {
+    background-color: var(--highlight-color);
+    border: 1px solid var(--line-color);
+    border-radius: 3px;
+    padding: 0.5em 1em 0;
+    margin-bottom: 0.5em;
+    & pre {
+      padding: 0;
+      width: auto;
+    }
+  }
+  & > *:first-child {
+    border: none;
+    margin: 0;
+    float: right;
+    clear: both;
+  }
+  & > *:nth-child(2) {
+    clear: both;
+    display: block;
+    border: none;
+  }
+}
+svg {
+  display: block;
+  /* font-family isn't space-separated, but =~ will have to do */
+  &[font-family~="monospace" i], & [font-family~="monospace" i] {
+    font-family: var(--font-mono);
+  }
+}
+.alignCenter {
+  margin: 1em 0;
+  &.art-text {
+    background-color: var(--highlight-color);
+    border: 1px solid var(--line-color);
+    border-radius: 3px;
+    padding: 0.5em 1em 0;
+    margin-bottom: 0.5em;
+    & pre {
+      padding: 0;
+      width: auto;
+    }
+  }
+  & > *:first-child {
+    border: none;
+    /* this isn't optimal, but it's an existence proof.  PrinceXML doesn't
+       support flexbox yet.
+    */
+    display: table;
+    margin: 0 auto;
+  }
+}
+
+/* lists */
+ol, ul {
+  padding: 0;
+  margin: 0 0 0.5em 2em;
+  & :is(ol, ul) {
+    margin-left: 1em;
+  }
+}
+li {
+  margin: 0 0 0.25em 0;
+}
+ul.empty, .ulEmpty {
+  list-style-type: none;
+  & li {
+    margin-top: 0.5em;
+  }
+}
+:is(ul, ol).compact, .ulCompact, .olCompact {
+  margin: 0 0 0 2em;
+  & li {
+    margin: 0;
+    & :first-child { margin-top: 0; }
+    & :last-child { margin-bottom: 0; }
+  }
+}
+
+/* definition lists */
+dl {
+  clear: left;
+  --indent: 3ch;
+  /* --indent: attr(indent ch); not supported in any browser, but we can dream */
+  &.olPercent {
+    --indent: 5ch;
+    & > dt {
+      min-width: calc(var(--indent) - 2ch);
+      float: none;
+    }
+  }
+
+  dl > dd > & {
+    margin-top: 0.5em;
+    margin-bottom: 0;
+  }
+
+  &:not(.dlNewline) > dt {
+    float: left;
+    margin-right: 2ch;
+    min-width: 8ch;
+  }
+  & > dd {
+    margin-bottom: .8em;
+    margin-left: var(--indent) !important; /* stupid element overrides */
+    min-height: 2ex;
+  }
+}
+:is(dl.compact, .dlCompact) > dd {
+  margin-bottom: 0;
+  & > :is(:first-child, .break:first-child + *) {
+    margin-top: 0;
+  }
+  & > :is(:last-child) {
+    margin-bottom: 0;
+  }
+}
+:is(dd, span).break {
+  display: none;
+}
+
+/* links */
+a {
+  text-decoration: none;
+  &[href] {
+    color: var(--link-color);
+    &:hover { text-decoration: underline; }
+    &.selfRef {
+      color: var(--text-color);
+      &:hover {
+        text-decoration: none;
+        background-color: var(--highlight-color);
+      }
+    }
+  }
+}
+.iref + a[href].internal {
+  color: var(--text-color);
+}
+a.xref:is(.cite, .auto), :is(#status-of-memo, #copyright) a {
+  white-space: nowrap;
+}
+
+/* Figures */
+tt, code, pre {
+  background-color: var(--highlight-color);
+  font: 14px/22px var(--font-mono);
+}
+tt, code {
+  /* changing the font for inline elements leads to different ascender
+     and descender heights; as we want to retain baseline alignment,
+     remove leading to avoid altering the final height of lines
+     note: this fails if these blocks take an entire line,
+     a different solution would be great */
+  line-height: 0;
+}
+:is(h1, h2, h3, h4, h5, h6) :is(tt, code) {
+  font-size: 84%;
+}
+pre {
+  border: 1px solid var(--line-color);
+  font-size: 13.5px;
+  line-height: 16px;
+  letter-spacing: -0.2px;
+  margin: 5px;
+  padding: 5px;
+}
+img {
+  max-width: 100%;
+}
+figure {
+  margin: 0.5em 0;
+  padding: 0;
+  & blockquote {
+    margin: 0.8em 0.4em 0.4em;
+  }
+}
+figcaption, caption {
+  font-style: italic;
+  margin: 0.5em 1.5em;
+  text-align: left;
+  caption-side: bottom;
+}
+@media screen {
+  /* Auto-collapse boilerplate. */
+  :is(#status-of-memo, #copyright) {
+    & p {
+      margin: -2px 0;
+      max-height: 0;
+      transition: max-height 2s ease, margin 0.5s ease 0.5s;
+      overflow: hidden;
+    }
+    &:hover p,
+    & h2:target ~ p {
+      margin: 0.5em 0;
+      max-height: 500px;
+      overflow: auto;
+    }
+  }
+  pre, svg {
+    display: inline-block;
+    /* In the horizontal direction, sometimes people make over-sized figures.
+       Scrollbars for those is therefore necessary: auto adds them as necessary..
+       In the vertical direction, the line-height can combine with the font
+       asender/descender height to produce scrollbars: hidden avoids that. */
+    overflow: auto hidden;
+  }
+  pre {
+    max-width: 100%;
+    width: calc(100% - 22px - 1em);
+  }
+  svg {
+    max-width: calc(100% - 22px - 1em);
+  }
+  figure pre {
+    display: block;
+    width: calc(100% - 25px);
+  }
+  :is(pre, svg) + .pilcrow {
+    display: inline-block;
+    vertical-align: text-bottom;
+    padding-bottom: 8px;
+  }
+}
+
+/* aside, blockquote */
+aside, blockquote {
+  margin-left: 0;
+  padding: 0 2em;
+  font-style: italic;
+}
+blockquote {
+  margin: 1em 0;
+  border-left: 2px var(--pilcrow-strong) solid;
+}
+cite {
+  display: block;
+  text-align: right;
+  font-style: italic;
+}
+
+/* tables */
+table {
+  width: auto;
+  max-width: 100%;
+  margin: 0 0 1em;
+  border-collapse: collapse;
+  &.right { margin-left: auto; }
+  &.center { margin-left: auto; margin-right: auto; }
+  &.left { margin-right: auto; }
+  & .text-left { text-align: left; }
+  & .text-center { text-align: center; }
+  & .text-right { text-align: right; }
+  & caption {
+    margin: 0;
+    padding: 3px 0 3px 1em;
+  }
+  & p { margin: 0; }
+}
+
+thead, tbody {
+  border: 1px solid var(--line-color);
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 5px 10px;
+}
+th {
+  background-color: var(--line-color);
+}
+:is(tr:nth-child(2n), thead+tbody > tr:nth-child(2n+1)) > td {
+  background-color: var(--background-color);
+}
+:is(tr:nth-child(2n+1), thead+tbody > tr:nth-child(2n)) > td {
+  background-color: var(--highlight-color);
+}
+
+/* pilcrow */
+a.pilcrow {
+  margin-left: 3px;
+  opacity: 0.2;
+  user-select: none;
+  &[href] {
+    color: var(--pilcrow-weak);
+    &:hover { text-decoration: none; }
+  }
+  @media not print {
+    :hover > &, &:focus {
+      opacity: 1;
+    }
+    &[href]:hover {
+      color: var(--pilcrow-strong);
+      background-color: transparent;
+    }
+  }
+  @media print {
+    display: none;
+  }
+}
+
+/* misc */
+hr {
+  border: 0;
+  border-top: 1px solid var(--line-color);
+}
+.bcp14 {
+  font-variant: small-caps;
+  font-weight: 600;
+  font-size: var(--small-font-size);
+}
+.role {
+  font-variant: all-small-caps;
+}
+sub, sup {
+  line-height: 1;
+  font-size: 80%;
+}
+
+/* info block */
+#identifiers {
+  margin: 0;
+  font-size: var(--small-font-size);
+  line-height: 18px;
+  --identifier-width: 15ch;
+  & dt {
+    width: var(--identifier-width);
+    min-width: var(--identifier-width);
+    clear: left;
+    float: left;
+    text-align: right;
+    margin-right: 1ch;
+  }
+  & dd {
+    margin: 0;
+    margin-left: calc(1em + var(--identifier-width)) !important;
+    min-width: 5em;
+  }
+  & .authors {
+    & .author {
+      display: inline-block;
+      margin-right: 1.5em;
+    }
+    & .org {
+      font-style: italic;
+    }
+  }
+}
+
+/* The prepared/rendered info at the very bottom of the page */
+.docInfo {
+  color: #999;
+  font-size: 0.9em;
+  font-style: italic;
+  margin-top: 2em;
+  & .prepared {
+    float: right;
+  }
+}
+
+/* table of contents */
+#toc {
+  padding: 0.75em 0 2em 0;
+  margin-bottom: 1em;
+
+  & nav {
+    & ul {
+      margin: 0 0.5em 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    & li {
+      line-height: 1.3em;
+      margin: 2px 0;
+      padding-left: 1.2em;
+      text-indent: -1.2em;
+    }
+  }
+  & a.xref {
+    white-space: normal;
+  }
+}
+
+.references {
+  & > dt {
+    text-align: right;
+    font-weight: bold;
+    min-width: 10ch;
+    margin-right: 1.5ch;
+    &:target::before {
+      content: "⇒";
+      margin: 0 10px 0 -25px;
+    }
+  }
+  & > dd {
+    margin-left: 12ch !important;
+    overflow: visible;
+    & .refInstance {
+      margin-bottom: 0.8em;
+    }
+    & .ascii {
+      margin-bottom: 0.25em;
+    }
+  }
+}
+
+#rfc\.index\.index + ul {
+  margin-left: 0;
+}
+
+/* authors */
+address.vcard {
+  font-style: normal;
+  max-width: 20em;
+  margin: 1em auto 1em 0;
+
+  & .nameRole {
+    font-weight: 700;
+    margin-left: 0;
+  }
+  & .label {
+    margin: 0.5em 0;
+  }
+  & .type {
+    display: none;
+  }
+  & .alternative-contact {
+    margin: 0.5em 0 0.25em 0;
+  }
+  & .non-ascii {
+    margin: 0 0 0 2em;
+  }
+  & div.left {
+    text-align: left;
+  }
+  & div.right {
+    text-align: right;
+  }
+}
+
+hr.addr {
+  border-top: 1px dashed;
+  margin: 0;
+  color: #ddd;
+  max-width: calc(100% - 16px);
+}
+@media (min-width: 500px) {
+  #authors-addresses {
+    & > section {
+      column-count: 2;
+      column-gap: 20px;
+    }
+    & > section > h2 {
+      column-span: all;
+    }
+    /* hack for break-inside: avoid-column */
+    & address {
+      display: inline-block;
+      break-inside: avoid-column;
+    }
+  }
+}
+
+/* Comments */
+.rfcEditorRemove {
+  & p:first-of-type {
+    font-style: italic;
+  }
+}
+.cref {
+  background-color: rgba(249, 232, 105, 0.3);
+  padding: 2px 4px;
+}
+.crefSource {
+  font-style: italic;
+}
+
+@media screen {
+  #toc {
+    & nav {
+      font-family: var(--font-title);
+      font-weight: 360;
+      & > ul { margin-bottom: 2em; }
+      & ul {
+        margin: 0 0 0 4px;
+        & :is(p, li) {
+          margin: 2px 0;
+        }
+      }
+    }
+    & a.toplink {
+      float: right;
+    }
+  }
+}
+@media not screen {
+  #toc a.toplink {
+    display: none;
+  }
+}
+
+
+/* TOC layout for smaller screens */
+@media screen and (max-width: 929px) {
+  #toc {
+    position: fixed;
+    z-index: 2;
+    top: 0;
+    right: 0;
+    padding: 1px 0 0 0;
+    margin: 0;
+    border-bottom: 1px solid #ccc;
+    opacity: 0.6;
+    & h2 {
+      margin: 0;
+      padding: 2px 0 2px 6px;
+      padding-right: 1em;
+      font-size: 18px;
+      line-height: 24px;
+      min-width: 190px;
+      text-align: right;
+      background-color: #444;
+      color: white;
+      cursor: pointer;
+      &::before { /* css hamburger */
+        float: right;
+        position: relative;
+        width: 1em;
+        height: 1px;
+        left: -164px;
+        margin: 8px 0 0 0;
+        background: white none repeat scroll 0 0;
+        box-shadow: 0 4px 0 0 white, 0 8px 0 0 white;
+        content: "";
+      }
+    }
+    & nav {
+      display: none;
+      background-color: var(--background-color);
+      padding: 0.5em 1em 1em;
+      overflow: auto;
+      overscroll-behavior: contain;
+      height: calc(100vh - 48px);
+      border-left: 1px solid #ddd;
+    }
+    &.active {
+      opacity: 1;
+      & nav { display: block; }
+    }
+    /* Make the collapsed ToC header render white on gray also when it's a link */
+    & h2 a,
+    & h2 a:is(:link, :focus, :hover),
+    & a.toplink,
+    & a.toplink:hover {
+      color: white;
+      background-color: #444;
+      text-decoration: none;
+    }
+    & a.toplink {
+      margin: 2px 0.5em 0;
+    }
+  }
+}
+
+/* TOC layout for wide screens */
+@media screen and (min-width: 930px) {
+  body {
+    padding-right: 360px;
+    padding-right: calc(min(180px + 20%, 500px));
+  }
+  #toc {
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    right: calc(50vw - 480px);
+    width: 312px;
+    margin: 0;
+    padding: 0;
+    z-index: 1;
+    & h2 {
+      margin: 0;
+      padding: 0.25em 1em 1em 0;
+    }
+    & nav {
+      display: block;
+      height: calc(90vh - 84px);
+      bottom: 0;
+      padding: 0.5em 0 2em;
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+    }
+    & a.toplink {
+      margin: 8px 0.5em 0;
+    }
+  }
+  img { /* future proofing */
+    max-width: 100%;
+    height: auto;
+  }
+}
+
+/* pagination */
+@media print {
+  body {
+    width: 100%;
+  }
+  p {
+    orphans: 3;
+    widows: 3;
+  }
+  #n-copyright-notice {
+    border-bottom: none;
+  }
+  #toc {
+    page-break-before: always;
+    border-top: none;
+    padding-top: 0;
+  }
+  #n-introduction {
+    page-break-before: always;
+  }
+  figure, pre, .vcard {
+    page-break-inside: avoid;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+  }
+  :is(h2, h3, h4, h5, h6)+*, dd {
+    page-break-before: avoid;
+  }
+  pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 10pt;
+  }
+  table {
+    border: 1px solid #ddd;
+  }
+  td {
+    border-top: 1px solid #ddd;
+  }
+}
+
+@page :first {
+  padding-top: 0;
+  @top-left {
+    content: normal;
+    border: none;
+  }
+  @top-center {
+    content: normal;
+    border: none;
+  }
+  @top-right {
+    content: normal;
+    border: none;
+  }
+}
+
+@page {
+  size: A4;
+  margin-bottom: 45mm;
+  padding-top: 20px;
+}
+
+/* Dark mode. */
+@media (prefers-color-scheme: dark) {
+:root {
+  --background-color: #121212;
+  --text-color: #f0f0f0;
+  --title-color: #fff;
+  --link-color: #4da4f0;
+  --highlight-color: #282828;
+  --line-color: #444;
+  --pilcrow-weak: #444;
+  --pilcrow-strong: #666;
+  scrollbar-color: #777 #333;
+}
+}
+
+/* SVG Trick: a prefix match works because only black and white are allowed */
+svg {
+  & :is([stroke="black"], [stroke^="#000"]) {
+    stroke: var(--text-color);
+  }
+  & :is([stroke="white"], [stroke^="#fff"]) {
+    stroke: var(--background-color);
+  }
+  & :is([fill="black"], [fill^="#000"], :not([fill])) {
+    fill: var(--text-color);
+  }
+  & :is([fill="white"], [fill^="#fff"]) {
+    fill: var(--background-color);
+  }
+}
+</style>
+
+</head>
+<body class="xml2rfc">
+<table class="ears">
+<thead><tr>
+<td class="left">Internet-Draft</td>
+<td class="center">ssts-backpressure</td>
+<td class="right">November 2026</td>
+</tr></thead>
+<tfoot><tr>
+<td class="left">Zengin, et al.</td>
+<td class="center">Expires 6 May 2027</td>
+<td class="right">[Page]</td>
+</tr></tfoot>
+</table>
+<div id="external-metadata" class="document-information"></div>
+<div id="internal-metadata" class="document-information">
+<dl id="identifiers">
+<dt class="label-workgroup">Workgroup:</dt>
+<dd class="workgroup">MOQ</dd>
+<dt class="label-internet-draft">Internet-Draft:</dt>
+<dd class="internet-draft">draft-zengin-moq-ssts-backpressure-latest</dd>
+<dt class="label-published">Published:</dt>
+<dd class="published">
+<time datetime="2026-11-02" class="published">2 November 2026</time>
+    </dd>
+<dt class="label-intended-status">Intended Status:</dt>
+<dd class="intended-status">Standards Track</dd>
+<dt class="label-expires">Expires:</dt>
+<dd class="expires"><time datetime="2027-05-06">6 May 2027</time></dd>
+<dt class="label-authors">Authors:</dt>
+<dd class="authors">
+<div class="author">
+      <div class="author-name">A. F. Zengin</div>
+<div class="org">Ozyegin University</div>
+</div>
+<div class="author">
+      <div class="author-name">Z. Gurel</div>
+<div class="org">Ozyegin University</div>
+</div>
+<div class="author">
+      <div class="author-name">A. Begen</div>
+<div class="org">Networked Media</div>
+</div>
+<div class="author">
+      <div class="author-name">D. Ugur</div>
+<div class="org">Ozyegin University</div>
+</div>
+</dd>
+</dl>
+</div>
+<h1 id="title">A Backpressure Algorithm for Sender-Side Track Switching in MOQ Transport</h1>
+<section id="section-abstract">
+      <h2 id="abstract"><a href="#abstract" class="selfRef">Abstract</a></h2>
+<p id="section-abstract-1">Sender-Side Track Switching (SSTS) lets a publisher forward one track at a
+time out of a switching set, and leaves the choice of which track to a
+pluggable algorithm. The default algorithm divides a bandwidth estimate
+between switching sets. This document defines an alternative algorithm that
+uses no bandwidth estimate at all. It monitors the number of open forwarding
+streams carrying the currently active tier, steps rapidly through the
+switching set's ladder during fast start, regulates steady-state upshifts
+dynamically according to relative bitrate jumps and the subscriber's
+probing risk tolerance, and reacts to mid-group congestion using
+intra-group monitoring and retroactive stream supersede. The signal
+is directly observable at the publisher, requires no cooperation from
+the congestion controller, and degrades toward the lowest quality under
+load rather than toward none.<a href="#section-abstract-1" class="pilcrow">¶</a></p>
+</section>
+<div id="status-of-memo">
+<section id="section-boilerplate.1">
+        <h2 id="name-status-of-this-memo">
+<a href="#name-status-of-this-memo" class="section-name selfRef">Status of This Memo</a>
+        </h2>
+<p id="section-boilerplate.1-1">
+        This Internet-Draft is submitted in full conformance with the
+        provisions of BCP 78 and BCP 79.<a href="#section-boilerplate.1-1" class="pilcrow">¶</a></p>
+<p id="section-boilerplate.1-2">
+        Internet-Drafts are working documents of the Internet Engineering Task
+        Force (IETF). Note that other groups may also distribute working
+        documents as Internet-Drafts. The list of current Internet-Drafts is
+        at <span><a href="https://datatracker.ietf.org/drafts/current/">https://datatracker.ietf.org/drafts/current/</a></span>.<a href="#section-boilerplate.1-2" class="pilcrow">¶</a></p>
+<p id="section-boilerplate.1-3">
+        Internet-Drafts are draft documents valid for a maximum of six months
+        and may be updated, replaced, or obsoleted by other documents at any
+        time. It is inappropriate to use Internet-Drafts as reference
+        material or to cite them other than as "work in progress."<a href="#section-boilerplate.1-3" class="pilcrow">¶</a></p>
+<p id="section-boilerplate.1-4">
+        This Internet-Draft will expire on 6 May 2027.<a href="#section-boilerplate.1-4" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="copyright">
+<section id="section-boilerplate.2">
+        <h2 id="name-copyright-notice">
+<a href="#name-copyright-notice" class="section-name selfRef">Copyright Notice</a>
+        </h2>
+<p id="section-boilerplate.2-1">
+            Copyright (c) 2026 IETF Trust and the persons identified as the
+            document authors. All rights reserved.<a href="#section-boilerplate.2-1" class="pilcrow">¶</a></p>
+<p id="section-boilerplate.2-2">
+            This document is subject to BCP 78 and the IETF Trust's Legal
+            Provisions Relating to IETF Documents
+            (<span><a href="https://trustee.ietf.org/license-info">https://trustee.ietf.org/license-info</a></span>) in effect on the date of
+            publication of this document. Please review these documents
+            carefully, as they describe your rights and restrictions with
+            respect to this document. Code Components extracted from this
+            document must include Revised BSD License text as described in
+            Section 4.e of the Trust Legal Provisions and are provided without
+            warranty as described in the Revised BSD License.<a href="#section-boilerplate.2-2" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="toc">
+<section id="section-toc.1">
+        <a href="#" onclick="scroll(0,0)" class="toplink">▲</a><h2 id="name-table-of-contents">
+<a href="#name-table-of-contents" class="section-name selfRef">Table of Contents</a>
+        </h2>
+<nav class="toc"><ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.1">
+            <p id="section-toc.1-1.1.1" class="keepWithNext"><a href="#section-1" class="auto internal xref">1</a>.  <a href="#name-introduction" class="internal xref">Introduction</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.1.2.1">
+                <p id="section-toc.1-1.1.2.1.1" class="keepWithNext"><a href="#section-1.1" class="auto internal xref">1.1</a>.  <a href="#name-scope" class="internal xref">Scope</a></p>
+</li>
+            </ul>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.2">
+            <p id="section-toc.1-1.2.1" class="keepWithNext"><a href="#section-2" class="auto internal xref">2</a>.  <a href="#name-conventions-and-definitions" class="internal xref">Conventions and Definitions</a></p>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.3">
+            <p id="section-toc.1-1.3.1"><a href="#section-3" class="auto internal xref">3</a>.  <a href="#name-algorithm-overview" class="internal xref">Algorithm Overview</a></p>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.4">
+            <p id="section-toc.1-1.4.1"><a href="#section-4" class="auto internal xref">4</a>.  <a href="#name-negotiation-and-assignment" class="internal xref">Negotiation and Assignment</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.4.2.1">
+                <p id="section-toc.1-1.4.2.1.1"><a href="#section-4.1" class="auto internal xref">4.1</a>.  <a href="#name-negotiation" class="internal xref">Negotiation</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.4.2.2">
+                <p id="section-toc.1-1.4.2.2.1"><a href="#section-4.2" class="auto internal xref">4.2</a>.  <a href="#name-switching_set_assignment-fi" class="internal xref">SWITCHING_SET_ASSIGNMENT Fields</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.4.2.3">
+                <p id="section-toc.1-1.4.2.3.1"><a href="#section-4.3" class="auto internal xref">4.3</a>.  <a href="#name-subscriber-behavior" class="internal xref">Subscriber Behavior</a></p>
+</li>
+            </ul>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5">
+            <p id="section-toc.1-1.5.1"><a href="#section-5" class="auto internal xref">5</a>.  <a href="#name-publisher-behavior" class="internal xref">Publisher Behavior</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5.2.1">
+                <p id="section-toc.1-1.5.2.1.1"><a href="#section-5.1" class="auto internal xref">5.1</a>.  <a href="#name-ladder-construction" class="internal xref">Ladder Construction</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5.2.2">
+                <p id="section-toc.1-1.5.2.2.1"><a href="#section-5.2" class="auto internal xref">5.2</a>.  <a href="#name-signals" class="internal xref">Signals</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5.2.3">
+                <p id="section-toc.1-1.5.2.3.1"><a href="#section-5.3" class="auto internal xref">5.3</a>.  <a href="#name-state-machine-and-adaptatio" class="internal xref">State Machine and Adaptation Logic</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5.2.3.2.1">
+                    <p id="section-toc.1-1.5.2.3.2.1.1"><a href="#section-5.3.1" class="auto internal xref">5.3.1</a>.  <a href="#name-fast-start-exploring-true" class="internal xref">Fast Start (<code>exploring = true</code>)</a></p>
+</li>
+                  <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5.2.3.2.2">
+                    <p id="section-toc.1-1.5.2.3.2.2.1"><a href="#section-5.3.2" class="auto internal xref">5.3.2</a>.  <a href="#name-steady-state-regulation-exp" class="internal xref">Steady-State Regulation (<code>exploring = false</code>)</a></p>
+</li>
+                  <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5.2.3.2.3">
+                    <p id="section-toc.1-1.5.2.3.2.3.1"><a href="#section-5.3.3" class="auto internal xref">5.3.3</a>.  <a href="#name-intra-group-monitoring" class="internal xref">Intra-Group Monitoring</a></p>
+</li>
+                </ul>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.5.2.4">
+                <p id="section-toc.1-1.5.2.4.1"><a href="#section-5.4" class="auto internal xref">5.4</a>.  <a href="#name-retroactive-supersede" class="internal xref">Retroactive Supersede</a></p>
+</li>
+            </ul>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.6">
+            <p id="section-toc.1-1.6.1"><a href="#section-6" class="auto internal xref">6</a>.  <a href="#name-properties-and-trade-offs" class="internal xref">Properties and Trade-Offs</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.6.2.1">
+                <p id="section-toc.1-1.6.2.1.1"><a href="#section-6.1" class="auto internal xref">6.1</a>.  <a href="#name-reactive-congestion-detecti" class="internal xref">Reactive Congestion Detection</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.6.2.2">
+                <p id="section-toc.1-1.6.2.2.1"><a href="#section-6.2" class="auto internal xref">6.2</a>.  <a href="#name-no-absolute-bitrate-floor" class="internal xref">No Absolute Bitrate Floor</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.6.2.3">
+                <p id="section-toc.1-1.6.2.3.1"><a href="#section-6.3" class="auto internal xref">6.3</a>.  <a href="#name-single-switching-set-scope" class="internal xref">Single Switching Set Scope</a></p>
+</li>
+            </ul>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.7">
+            <p id="section-toc.1-1.7.1"><a href="#section-7" class="auto internal xref">7</a>.  <a href="#name-implementation-status" class="internal xref">Implementation Status</a></p>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.8">
+            <p id="section-toc.1-1.8.1"><a href="#section-8" class="auto internal xref">8</a>.  <a href="#name-security-considerations" class="internal xref">Security Considerations</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.8.2.1">
+                <p id="section-toc.1-1.8.2.1.1"><a href="#section-8.1" class="auto internal xref">8.1</a>.  <a href="#name-inaccurate-throughput-thres" class="internal xref">Inaccurate Throughput Thresholds Cannot Starve a Track</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.8.2.2">
+                <p id="section-toc.1-1.8.2.2.1"><a href="#section-8.2" class="auto internal xref">8.2</a>.  <a href="#name-subscriber-manipulation-of-" class="internal xref">Subscriber Manipulation of Flow Control or Parameters</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.8.2.3">
+                <p id="section-toc.1-1.8.2.3.1"><a href="#section-8.3" class="auto internal xref">8.3</a>.  <a href="#name-resource-cost-of-the-signal" class="internal xref">Resource Cost of the Signals</a></p>
+</li>
+            </ul>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.9">
+            <p id="section-toc.1-1.9.1"><a href="#section-9" class="auto internal xref">9</a>.  <a href="#name-iana-considerations" class="internal xref">IANA Considerations</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.9.2.1">
+                <p id="section-toc.1-1.9.2.1.1"><a href="#section-9.1" class="auto internal xref">9.1</a>.  <a href="#name-ssts-algorithm-registration" class="internal xref">SSTS Algorithm Registration</a></p>
+</li>
+            </ul>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.10">
+            <p id="section-toc.1-1.10.1"><a href="#section-10" class="auto internal xref">10</a>. <a href="#name-references" class="internal xref">References</a></p>
+<ul class="compact toc ulBare ulEmpty">
+<li class="compact toc ulBare ulEmpty" id="section-toc.1-1.10.2.1">
+                <p id="section-toc.1-1.10.2.1.1"><a href="#section-10.1" class="auto internal xref">10.1</a>.  <a href="#name-normative-references" class="internal xref">Normative References</a></p>
+</li>
+              <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.10.2.2">
+                <p id="section-toc.1-1.10.2.2.1"><a href="#section-10.2" class="auto internal xref">10.2</a>.  <a href="#name-informative-references" class="internal xref">Informative References</a></p>
+</li>
+            </ul>
+</li>
+          <li class="compact toc ulBare ulEmpty" id="section-toc.1-1.11">
+            <p id="section-toc.1-1.11.1"><a href="#appendix-A" class="auto internal xref"></a><a href="#name-authors-addresses" class="internal xref">Authors' Addresses</a></p>
+</li>
+        </ul>
+</nav>
+</section>
+</div>
+<div id="introduction">
+<section id="section-1">
+      <h2 id="name-introduction">
+<a href="#section-1" class="section-number selfRef">1. </a><a href="#name-introduction" class="section-name selfRef">Introduction</a>
+      </h2>
+<p id="section-1-1">Sender-Side Track Switching (SSTS) <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span> lets a subscriber group several
+encodings of the same content into a <em>switching set</em> and hands the choice of
+which encoding to forward to the publisher, typically a relay. The publisher forwards one member of the set at a time and dynamically switches between members as path conditions change. Which member it picks is not fixed by SSTS: the
+SWITCHING_SET_ASSIGNMENT parameter names an <em>algorithm</em>, and each algorithm
+defines its own fields, its own publisher behavior, and its own subscriber behavior.<a href="#section-1-1" class="pilcrow">¶</a></p>
+<p id="section-1-2">The default algorithm defined in <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span> is an allocation algorithm. It
+starts from <code>B_total</code>, an estimate of the downstream bandwidth available to
+the subscriber's connection, divides it between switching sets by rank and
+weight, and selects, in each set, the highest member whose declared throughput
+threshold fits the share the set received.<a href="#section-1-2" class="pilcrow">¶</a></p>
+<p id="section-1-3">That design assumes two inputs the publisher may not have:<a href="#section-1-3" class="pilcrow">¶</a></p>
+<ul class="normal">
+<li class="normal" id="section-1-4.1">
+          <p id="section-1-4.1.1">A bandwidth estimate with a usable timebase. The estimate is obtained from
+the transport stack, and what a transport stack can offer is a congestion
+controller's view of the recent past: a congestion window, a pacing rate, a
+smoothed round-trip time <span>[<a href="#RFC9002" class="cite xref">RFC9002</a>]</span>. On a connection that is not
+sending at capacity -- which is the normal state of a relay -- that view is
+bounded by what was sent, not by what could have been sent, so the estimate
+tends to confirm the tier already in use rather than reveal the next one up.
+Measuring the headroom, rather than inferring it, requires sending data, which is a separate mechanism <span>[<a href="#Probing" class="cite xref">Probing</a>]</span>.<a href="#section-1-4.1.1" class="pilcrow">¶</a></p>
+</li>
+        <li class="normal" id="section-1-4.2">
+          <p id="section-1-4.2.1">Sensitivity to absolute threshold calibration. Comparing a transport rate
+estimate directly against subscriber-declared throughput thresholds requires
+both numbers to share a well-calibrated absolute scale. If a track's actual
+bitrate fluctuates above its declared threshold (e.g., during complex video
+scenes), an estimate-driven selector may continue forwarding a track that is
+already building a queue at the transport layer.<a href="#section-1-4.2.1" class="pilcrow">¶</a></p>
+</li>
+      </ul>
+<p id="section-1-5">This document defines an algorithm that needs neither. Rather than asking
+the transport stack what rate the path might support, the publisher counts
+how many forwarding streams carrying the currently selected tier remain open
+and unconsumed. An accumulating stream depth is direct evidence of overrun on
+the connection.<a href="#section-1-5" class="pilcrow">¶</a></p>
+<p id="section-1-6">The cost of using evidence instead of inference is that the evidence arrives
+late. A bandwidth estimate can suggest that a higher tier would fit before
+anything is sent at that tier; backpressure can only report that the tier
+currently in use does not fit, after a group has already been delayed. The
+algorithm in this document is therefore conservative by construction: it
+starts at the lowest tier, climbs only on a streak of healthy groups, and
+drops on the first sign of a queue. An earlier version of this SSTS algorithm
+has been evaluated in <span>[<a href="#MMSP26" class="cite xref">MMSP26</a>]</span>.<a href="#section-1-6" class="pilcrow">¶</a></p>
+<div id="scope">
+<section id="section-1.1">
+        <h3 id="name-scope">
+<a href="#section-1.1" class="section-number selfRef">1.1. </a><a href="#name-scope" class="section-name selfRef">Scope</a>
+        </h3>
+<p id="section-1.1-1">This document defines one SSTS algorithm designed for a single active
+switching set per connection. Concurrent adaptation across multiple active
+switching sets on the same connection is not supported by this specification;
+subscribers with multiple switching sets <span class="bcp14">SHOULD</span> assign at most one switching
+set to this algorithm and use an allocation algorithm (such as the default
+algorithm of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>) for any others. This document does not change the SSTS
+extension itself: negotiation, the SWITCHING_SET_ASSIGNMENT parameter, the
+rules for forming and modifying switching sets, and the default algorithm
+defined in <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span> are unaffected.<a href="#section-1.1-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+</section>
+</div>
+<div id="conventions-and-definitions">
+<section id="section-2">
+      <h2 id="name-conventions-and-definitions">
+<a href="#section-2" class="section-number selfRef">2. </a><a href="#name-conventions-and-definitions" class="section-name selfRef">Conventions and Definitions</a>
+      </h2>
+<p id="section-2-1">The key words "<span class="bcp14">MUST</span>", "<span class="bcp14">MUST NOT</span>", "<span class="bcp14">REQUIRED</span>", "<span class="bcp14">SHALL</span>", "<span class="bcp14">SHALL NOT</span>", "<span class="bcp14">SHOULD</span>", "<span class="bcp14">SHOULD NOT</span>", "<span class="bcp14">RECOMMENDED</span>", "<span class="bcp14">NOT RECOMMENDED</span>",
+"<span class="bcp14">MAY</span>", and "<span class="bcp14">OPTIONAL</span>" in this document are to be interpreted as
+described in BCP 14 <span>[<a href="#RFC2119" class="cite xref">RFC2119</a>]</span> <span>[<a href="#RFC8174" class="cite xref">RFC8174</a>]</span> when, and only when, they
+appear in all capitals, as shown here.<a href="#section-2-1" class="pilcrow">¶</a></p>
+<p id="section-2-2">This document uses the terms Track, Group, Object, Subgroup, publisher,
+subscriber and relay as defined in <span>[<a href="#MoQTransport" class="cite xref">MoQTransport</a>]</span>, and the terms switching
+set, member and algorithm as defined in <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>. In addition:<a href="#section-2-2" class="pilcrow">¶</a></p>
+<span class="break"></span><dl class="dlParallel" id="section-2-3">
+        <dt id="section-2-3.1">Ladder:</dt>
+        <dd style="margin-left: 1.5em" id="section-2-3.2">
+          <p id="section-2-3.2.1">The members of one switching set, ordered by ascending throughput threshold.
+Position 0 is the lowest-quality member.<a href="#section-2-3.2.1" class="pilcrow">¶</a></p>
+</dd>
+        <dd class="break"></dd>
+<dt id="section-2-3.3">Tier:</dt>
+        <dd style="margin-left: 1.5em" id="section-2-3.4">
+          <p id="section-2-3.4.1">An integer index into the switching set's ladder, in the range 0 to
+<code>i_max</code>.<a href="#section-2-3.4.1" class="pilcrow">¶</a></p>
+</dd>
+        <dd class="break"></dd>
+<dt id="section-2-3.5">Nominal Tier Rate (<code>R[i]</code>):</dt>
+        <dd style="margin-left: 1.5em" id="section-2-3.6">
+          <p id="section-2-3.6.1">The declared throughput threshold of the track at tier <code>i</code> of the ladder.<a href="#section-2-3.6.1" class="pilcrow">¶</a></p>
+</dd>
+        <dd class="break"></dd>
+<dt id="section-2-3.7">Forwarding stream:</dt>
+        <dd style="margin-left: 1.5em" id="section-2-3.8">
+          <p id="section-2-3.8.1">A unidirectional QUIC stream the publisher has opened toward the subscriber
+to carry Objects of a Subgroup of a member of a switching set, and that has
+neither been closed nor reset. A stream still draining its last Object is
+open.<a href="#section-2-3.8.1" class="pilcrow">¶</a></p>
+</dd>
+        <dd class="break"></dd>
+<dt id="section-2-3.9">Replacement stream:</dt>
+        <dd style="margin-left: 1.5em" id="section-2-3.10">
+          <p id="section-2-3.10.1">A forwarding stream opened during a retroactive supersede (<a href="#supersede" class="auto internal xref">Section 5.4</a>)
+to re-send an in-flight Group at a lower tier after canceling the higher-tier
+stream.<a href="#section-2-3.10.1" class="pilcrow">¶</a></p>
+</dd>
+        <dd class="break"></dd>
+<dt id="section-2-3.11">Active stream depth (<code>d</code>):</dt>
+        <dd style="margin-left: 1.5em" id="section-2-3.12">
+          <p id="section-2-3.12.1">The number of currently open forwarding streams carrying the track selected
+at the current tier <code>i</code>, excluding replacement streams (<a href="#signals" class="auto internal xref">Section 5.2</a>).<a href="#section-2-3.12.1" class="pilcrow">¶</a></p>
+</dd>
+      <dd class="break"></dd>
+</dl>
+</section>
+</div>
+<div id="algorithm-overview">
+<section id="section-3">
+      <h2 id="name-algorithm-overview">
+<a href="#section-3" class="section-number selfRef">3. </a><a href="#name-algorithm-overview" class="section-name selfRef">Algorithm Overview</a>
+      </h2>
+<p id="section-3-1">For a switching set assigned to this algorithm, the publisher orders the
+member tracks into a ladder of tiers 0 to <code>i_max</code> by ascending
+throughput threshold and maintains a current tier index <code>i</code>, initialized to
+0.<a href="#section-3-1" class="pilcrow">¶</a></p>
+<p id="section-3-2">The adaptation controller evaluates the active stream depth <code>d</code>
+across two execution paths:<a href="#section-3-2" class="pilcrow">¶</a></p>
+<ol start="1" type="1" class="normal type-1" id="section-3-3">
+<li id="section-3-3.1">
+          <p id="section-3-3.1.1"><strong>Group boundary evaluations:</strong> When the publisher begins forwarding a new
+Group (a Group ID greater than the largest Group ID previously evaluated),
+it checks whether the transport path is clear: the active stream depth is
+within target (<code>d &lt;= D_target</code>, where <code>D_target</code> is 1 by default), no
+replacement stream from a previous supersede is still in flight, and the
+next tier up (<code>i + 1</code>) has no open forwarding stream still draining
+(<a href="#signals" class="auto internal xref">Section 5.2</a>).<a href="#section-3-3.1.1" class="pilcrow">¶</a></p>
+<ul class="normal">
+<li class="normal" id="section-3-3.1.2.1">
+              <p id="section-3-3.1.2.1.1">During <strong>Fast Start</strong> (<code>exploring = true</code>), each clear Group boundary
+immediately advances the tier by one (<code>i = i + 1</code>) so the session can
+discover available capacity rapidly. Fast start ends permanently as soon
+as congestion is detected (<code>d &gt;= D_down</code>, where <code>D_down</code> is 2 by default)
+or when <code>i</code> reaches <code>i_max</code>.<a href="#section-3-3.1.2.1.1" class="pilcrow">¶</a></p>
+</li>
+            <li class="normal" id="section-3-3.1.2.2">
+              <p id="section-3-3.1.2.2.1">During <strong>Steady-State Regulation</strong> (<code>exploring = false</code>), the publisher
+advances from tier <code>i</code> to <code>i + 1</code> only after observing <code>U(i)</code> consecutive
+clear Group boundaries. <code>U(i)</code> scales dynamically with the fractional
+bitrate increase <code>(R[i+1] - R[i]) / R[i]</code> and the subscriber's probing
+risk tolerance <code>rho</code>, bounded by <code>U_min</code> and <code>U_max</code>. If <code>d &gt;= D_down</code>
+at a Group boundary, the publisher immediately steps down
+one tier (<code>i = max(i - 1, 0)</code>) and, when <code>Retroactive supersede</code> is enabled,
+triggers a retroactive supersede.<a href="#section-3-3.1.2.2.1" class="pilcrow">¶</a></p>
+</li>
+          </ul>
+</li>
+        <li id="section-3-3.2">
+          <p id="section-3-3.2.1"><strong>Intra-group monitoring:</strong> Waiting for the next Group boundary to react to
+a sudden bandwidth drop can stall playback. Whenever an Object is forwarded
+within an ongoing Group during steady state, the publisher checks <code>d</code>. A
+single reading of <code>d &gt;= D_down</code> is tolerated to allow brief
+handoff overlap between consecutive Groups, but if <code>d &gt;= D_down</code>
+persists for <code>M</code> consecutive Object transmissions, the publisher
+immediately steps down one tier mid-Group and, when Retroactive supersede
+is enabled, triggers a retroactive supersede.<a href="#section-3-3.2.1" class="pilcrow">¶</a></p>
+</li>
+      </ol>
+<p id="section-3-4">Whenever a downshift occurs (i &lt; i_prev) and Retroactive supersede is enabled,
+<strong>Retroactive Supersede</strong> (<a href="#supersede" class="auto internal xref">Section 5.4</a>) clears queued higher-bitrate bytes
+from the path by resetting the newest overtaken in-flight stream with the
+MOQT <code>Cancelled</code> error code and re-sending that Group on a new stream using
+the newly selected lower-tier track, prepending cached Objects from the start
+of the Subgroup and inheriting the remaining client latency budget.<a href="#section-3-4" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="negotiation-and-assignment">
+<section id="section-4">
+      <h2 id="name-negotiation-and-assignment">
+<a href="#section-4" class="section-number selfRef">4. </a><a href="#name-negotiation-and-assignment" class="section-name selfRef">Negotiation and Assignment</a>
+      </h2>
+<div id="negotiation">
+<section id="section-4.1">
+        <h3 id="name-negotiation">
+<a href="#section-4.1" class="section-number selfRef">4.1. </a><a href="#name-negotiation" class="section-name selfRef">Negotiation</a>
+        </h3>
+<p id="section-4.1-1">Support for this algorithm is advertised in the SSTS_ALGORITHMS Setup Option
+of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span> by including the algorithm identifier allocated in
+<a href="#iana-algorithm" class="auto internal xref">Section 9.1</a>. An endpoint that does not advertise the identifier <span class="bcp14">MUST NOT</span> be sent a SWITCHING_SET_ASSIGNMENT naming it; a publisher that receives
+one for an algorithm it did not advertise follows the error handling of
+<span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>.<a href="#section-4.1-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="assignment-fields">
+<section id="section-4.2">
+        <h3 id="name-switching_set_assignment-fi">
+<a href="#section-4.2" class="section-number selfRef">4.2. </a><a href="#name-switching_set_assignment-fi" class="section-name selfRef">SWITCHING_SET_ASSIGNMENT Fields</a>
+        </h3>
+<p id="section-4.2-1">This algorithm extends the base SWITCHING_SET_ASSIGNMENT parameter of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>
+with the fields of the default algorithm (<span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>, Section 6.1) followed by
+five adaptation parameters:<a href="#section-4.2-1" class="pilcrow">¶</a></p>
+<div class="alignLeft art-text artwork" id="section-4.2-2">
+<pre>
+SWITCHING_SET_ASSIGNMENT {
+  Switching set ID (vi64),
+  Algorithm ID (vi64),
+  Throughput threshold (vi64),
+  Set throughput weight (vi64),
+  Activate switching (vi64),
+  Set rank (8),
+  Latency budget B (vi64),
+  Probing risk factor rho_pct (vi64),
+  Upshift min streak U_min (vi64),
+  Upshift max streak U_max (vi64),
+  Retroactive supersede (vi64)
+}
+</pre><a href="#section-4.2-2" class="pilcrow">¶</a>
+</div>
+<p id="section-4.2-3">The fields are interpreted as follows:<a href="#section-4.2-3" class="pilcrow">¶</a></p>
+<ul class="normal">
+<li class="normal" id="section-4.2-4.1">
+            <p id="section-4.2-4.1.1"><strong>Throughput threshold:</strong> The nominal bitrate of this track in kbps. Unlike
+the default algorithm of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>, this value is never compared against an
+estimated connection bandwidth <code>B_total</code>. Instead, it is used for two
+relative calculations:<a href="#section-4.2-4.1.1" class="pilcrow">¶</a></p>
+<ol start="1" type="1" class="normal type-1" id="section-4.2-4.1.2">
+<li id="section-4.2-4.1.2.1">
+                <p id="section-4.2-4.1.2.1.1">Ordering the members within the switching set's ladder
+(<code>R[0] &lt;= R[1] &lt;= ... &lt;= R[i_max]</code>); and<a href="#section-4.2-4.1.2.1.1" class="pilcrow">¶</a></p>
+</li>
+              <li id="section-4.2-4.1.2.2">
+                <p id="section-4.2-4.1.2.2.1">Computing the relative step ratio <code>(R[i+1] - R[i]) / R[i]</code> in the dynamic
+upshift streak formula (<a href="#state-machine" class="auto internal xref">Section 5.3</a>).
+If two members of a switching set declare the same throughput threshold, the
+publisher <span class="bcp14">MUST</span> break the tie deterministically (for example, by order of
+assignment arrival) and keep the order stable while both members remain in
+the set.<a href="#section-4.2-4.1.2.2.1" class="pilcrow">¶</a></p>
+</li>
+            </ol>
+</li>
+          <li class="normal" id="section-4.2-4.2">
+            <p id="section-4.2-4.2.1"><strong>Set throughput weight:</strong> Expressed as an integer <code>N</code> in the range 1 to 10
+as defined in <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>. Because this algorithm operates on a single switching
+set per connection and does not divide a bandwidth budget across sets, the
+publisher parses this field for wire compatibility with <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span> Section 6.1
+and ignores its value.<a href="#section-4.2-4.2.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-4.2-4.3">
+            <p id="section-4.2-4.3.1"><strong>Activate switching:</strong> As defined in <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>. When 0, switching is paused
+for the set. When <code>N</code>, the publisher activates switching for the set once at
+least <code>N</code> tracks in the set have active subscriptions.<a href="#section-4.2-4.3.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-4.2-4.4">
+            <p id="section-4.2-4.4.1"><strong>Set rank:</strong> Expressed as an 8-bit unsigned integer (0-255) as defined in
+<span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>. The publisher parses this field for wire compatibility with
+<span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span> Section 6.1 and ignores its value.<a href="#section-4.2-4.4.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-4.2-4.5">
+            <p id="section-4.2-4.5.1"><strong>Latency budget (<code>B</code>):</strong> The subscriber's reorder/jitter buffer budget in
+milliseconds. Any in-flight forwarding stream that remains open for longer
+than <code>B</code> milliseconds without completing is reset by the publisher (Group
+discarded). When retroactive supersede replaces an overtaken stream of age
+<code>t_age</code>, the replacement stream inherits a remaining deadline of
+<code>T_resend = max(1, B - t_age)</code> ms. Setting <code>B = 0</code>
+designates a latency-insensitive profile where delivery timeout resets are
+disabled and the publisher performs lossless forwarding without drop
+deadlines.<a href="#section-4.2-4.5.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-4.2-4.6">
+            <p id="section-4.2-4.6.1"><strong>Probing risk factor (<code>rho_pct</code>):</strong> The probing risk tolerance <code>rho</code>
+(<code>0 &lt; rho &lt;= 1</code>), encoded as an integer percentage <code>rho_pct</code>. A value of
+<code>0</code> selects the publisher default (<code>25</code>, corresponding to <code>rho = 0.25</code>),
+<code>1..100</code> are explicit percentages, and values greater than <code>100</code> <span class="bcp14">MUST</span> be
+clamped to <code>100</code>. Larger values climb more aggressively across large
+bitrate jumps; smaller values require longer observation streaks.<a href="#section-4.2-4.6.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-4.2-4.7">
+            <p id="section-4.2-4.7.1"><strong>Upshift min streak (<code>U_min</code>):</strong> The minimum number of consecutive
+uncongested Group boundaries required before stepping up one tier in steady
+state. When set to <code>0</code> (unset) or set below 2, the publisher clamps
+<code>U_min</code> to a minimum of <code>2</code> to ensure stability, with a default
+<code>U_default = 2</code>.<a href="#section-4.2-4.7.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-4.2-4.8">
+            <p id="section-4.2-4.8.1"><strong>Upshift max streak (<code>U_max</code>):</strong> The upper bound on the number of
+consecutive uncongested Group boundaries required before stepping up one
+tier in steady state. When set to <code>0</code> (unset), the publisher leaves
+<code>U_max</code> unbounded (no upper cap is enforced). If <code>U_max &gt; 0</code> and
+<code>U_max &lt; U_min</code>, the publisher <span class="bcp14">MUST</span> set <code>U_max = U_min</code>. A
+subscriber can enforce a static upshift interval of <code>K</code> Groups (bypassing
+<code>rho</code>) by setting <code>U_min = U_max = K</code>.<a href="#section-4.2-4.8.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-4.2-4.9">
+            <p id="section-4.2-4.9.1"><strong>Retroactive supersede:</strong> Controls whether the publisher performs
+retroactive supersede (<a href="#supersede" class="auto internal xref">Section 5.4</a>) upon a downshift. When set to <code>1</code>, a
+downshift cancels the newest overtaken in-flight stream and re-sends the
+affected Subgroup from its beginning at the newly selected lower tier.
+Unlike <code>rho_pct</code>, <code>U_min</code>, and <code>U_max</code>, a value of <code>0</code> does not select a
+default; when set to <code>0</code>, retroactive supersede is disabled: in-flight
+Groups are not canceled and continue to completion on the track they
+started on, while the lowered tier <code>i</code> takes effect at the next new Group
+boundary. Any non-zero value is treated as <code>1</code>.<a href="#section-4.2-4.9.1" class="pilcrow">¶</a></p>
+</li>
+        </ul>
+<p id="section-4.2-5">When multiple subscriptions in the same switching set specify different values
+for any set-level field (<code>Activate switching</code>, <code>Latency budget</code>, <code>Probing risk
+factor</code>, <code>Upshift min streak</code>, <code>Upshift max streak</code>, or <code>Retroactive supersede</code>), the
+publisher <span class="bcp14">MUST</span> use the value from the most recently received message for that set.<a href="#section-4.2-5" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="subscriber-behavior">
+<section id="section-4.3">
+        <h3 id="name-subscriber-behavior">
+<a href="#section-4.3" class="section-number selfRef">4.3. </a><a href="#name-subscriber-behavior" class="section-name selfRef">Subscriber Behavior</a>
+        </h3>
+<p id="section-4.3-1">The subscriber follows the general rules of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span> for establishing and
+modifying switching sets, adding or removing tracks, and pausing or resuming
+switching via <code>Activate switching</code>.<a href="#section-4.3-1" class="pilcrow">¶</a></p>
+<p id="section-4.3-2">A subscriber <span class="bcp14">MUST NOT</span> assign more than one active switching set per connection
+to this algorithm. If a subscriber uses multiple switching sets on the same
+connection, it <span class="bcp14">SHOULD</span> assign at most one switching set (typically video) to
+this algorithm and assign the remaining switching sets to an algorithm that
+allocates bandwidth across sets, such as the default algorithm of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>.
+In particular, constant-bitrate or low-bitrate media such as audio <span class="bcp14">SHOULD</span> be
+subscribed as ordinary MOQT tracks or assigned to another algorithm rather
+than occupying the single switching set governed by this algorithm. If a
+publisher nevertheless receives a <code>SWITCHING_SET_ASSIGNMENT</code> assigning an
+additional active switching set on the same connection to this algorithm, it
+<span class="bcp14">SHOULD</span> reject the assignment or leave the additional set inactive.<a href="#section-4.3-2" class="pilcrow">¶</a></p>
+<p id="section-4.3-3">When configuring the adaptation parameters in <a href="#assignment-fields" class="auto internal xref">Section 4.2</a>, it is
+<span class="bcp14">RECOMMENDED</span> that the subscriber leave <code>Upshift min streak</code> (<code>U_min</code>) and
+<code>Upshift max streak</code> (<code>U_max</code>) unset (<code>0</code>) and adjust upshift sensitivity
+solely using <code>Probing risk factor</code> (<code>rho</code>). A subscriber that requires a
+fixed upshift interval of <code>K</code> clear Groups (<code>K &gt;= 2</code>) regardless of the
+relative bitrate step size <span class="bcp14">MAY</span> bypass <code>rho</code> by setting <code>U_min = U_max = K</code>.<a href="#section-4.3-3" class="pilcrow">¶</a></p>
+<p id="section-4.3-4">A subscriber whose media pipeline cannot discard partially buffered Groups and
+replace them with a re-sent Subgroup stream <span class="bcp14">MUST</span> set <code>Retroactive supersede</code>
+to <code>0</code> in <code>SWITCHING_SET_ASSIGNMENT</code> (<a href="#assignment-fields" class="auto internal xref">Section 4.2</a>).
+When <code>Retroactive supersede</code> is enabled (<code>1</code>), the publisher aborts the
+overtaken in-flight forwarding stream with a QUIC <code>RESET_STREAM</code> and opens a
+replacement stream for the same Group ID on the newly selected lower-tier
+track, starting from the beginning of the affected Subgroup. Upon receiving
+a <code>RESET_STREAM</code> carrying the MOQT <code>Cancelled</code> error code on a stream
+belonging to the switching set -- or upon receiving a new forwarding stream
+for the same Group ID on a different member track of the switching set --
+the subscriber <span class="bcp14">MUST</span> discard any Objects already buffered from the canceled
+higher-tier stream that have not yet been passed to the decoder, and <span class="bcp14">MUST</span>
+instead buffer and decode the Objects arriving on the replacement stream
+from the beginning of the Subgroup so that inter-frame decoder state remains
+valid. For any Object position that has already been presented prior to the
+switch, the subscriber <span class="bcp14">MUST</span> decode the replacement Object without rendering
+it; it <span class="bcp14">MUST NOT</span> present the same Object position twice.<a href="#section-4.3-4" class="pilcrow">¶</a></p>
+</section>
+</div>
+</section>
+</div>
+<div id="publisher-behavior">
+<section id="section-5">
+      <h2 id="name-publisher-behavior">
+<a href="#section-5" class="section-number selfRef">5. </a><a href="#name-publisher-behavior" class="section-name selfRef">Publisher Behavior</a>
+      </h2>
+<div id="ladder">
+<section id="section-5.1">
+        <h3 id="name-ladder-construction">
+<a href="#section-5.1" class="section-number selfRef">5.1. </a><a href="#name-ladder-construction" class="section-name selfRef">Ladder Construction</a>
+        </h3>
+<p id="section-5.1-1">For the active switching set assigned to this algorithm, the publisher orders
+its member tracks into a ladder <code>L = [m[0], m[1], ..., m[i_max]]</code> sorted
+by ascending declared throughput threshold
+<code>R[0] &lt;= R[1] &lt;= ... &lt;= R[i_max]</code>.<a href="#section-5.1-1" class="pilcrow">¶</a></p>
+<p id="section-5.1-2">Whenever a track is added to or removed from the switching set, the publisher
+recomputes the ladder and sets the current tier index <code>i</code> to the highest tier
+whose nominal rate <code>R[i]</code> does not exceed the nominal rate of the previously
+selected track (clamped to the range 0 to <code>i_max</code>).<a href="#section-5.1-2" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="signals">
+<section id="section-5.2">
+        <h3 id="name-signals">
+<a href="#section-5.2" class="section-number selfRef">5.2. </a><a href="#name-signals" class="section-name selfRef">Signals</a>
+        </h3>
+<p id="section-5.2-1">The publisher scopes its congestion signal strictly to the currently active
+tier <code>i</code> of the switching set controlled by this algorithm.<a href="#section-5.2-1" class="pilcrow">¶</a></p>
+<p id="section-5.2-2">For any tier <code>j</code> of the switching set, let <code>ordinary_open_streams(j)</code> be the
+number of currently open forwarding streams carrying track <code>m[j]</code> that were
+<strong>not</strong> opened as replacement streams by a retroactive supersede
+(<a href="#supersede" class="auto internal xref">Section 5.4</a>). The counter is incremented when the publisher opens an
+ordinary forwarding stream for <code>m[j]</code> and decremented when that stream closes,
+is reset by the publisher, or is stopped by the subscriber (<code>STOP_SENDING</code>).
+Similarly, let <code>open_replacement_streams</code> be the number of currently open
+replacement streams for the switching set, incremented when a replacement
+stream is opened during a retroactive supersede and decremented when it
+closes, is reset, or is stopped. Streams belonging to tracks outside the
+switching set (such as an ordinary audio subscription) <span class="bcp14">MUST NOT</span> be counted in
+either counter.<a href="#section-5.2-2" class="pilcrow">¶</a></p>
+<p id="section-5.2-3">The active stream depth <code>d</code> evaluated by the state machine is:<a href="#section-5.2-3" class="pilcrow">¶</a></p>
+<div class="alignLeft art-text artwork" id="section-5.2-4">
+<pre>
+d = ordinary_open_streams(i)
+</pre><a href="#section-5.2-4" class="pilcrow">¶</a>
+</div>
+<p id="section-5.2-5">Isolating <code>d</code> to the active tier <code>i</code> and excluding replacement streams has two
+important properties:<a href="#section-5.2-5" class="pilcrow">¶</a></p>
+<ul class="normal">
+<li class="normal" id="section-5.2-6.1">
+            <p id="section-5.2-6.1.1"><strong>No cooldown state required:</strong> When the publisher steps down from tier
+<code>i_prev</code> to a lower tier <code>i</code>, any streams still draining from
+<code>i_prev</code> (or older tiers) are not counted in <code>d</code> at tier <code>i</code>. The
+controller evaluates whether the new tier <code>i</code> is sustainable on its own
+merits without cascading downshifts from historical congestion.<a href="#section-5.2-6.1.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-5.2-6.2">
+            <p id="section-5.2-6.2.1"><strong>No separate timeout counter required:</strong> Streams that expire due to the
+latency budget <code>B</code> are symptoms of queue accumulation that has already
+raised <code>d</code> to or above <code>D_down</code>. Filtering timeout events out of
+<code>d</code> avoids double-penalizing the tier after a downshift has already taken
+place.<a href="#section-5.2-6.2.1" class="pilcrow">¶</a></p>
+</li>
+        </ul>
+<p id="section-5.2-7">Because <code>d</code> is scoped strictly to ordinary forwarding streams at the current
+tier <code>i</code>, <code>d &lt;= D_target</code> alone does not guarantee that the pipeline
+is clear to step up to tier <code>i + 1</code>. The publisher therefore combines
+<code>d &lt;= D_target</code> with two boolean climb guards when evaluating whether a
+Group boundary is clear:<a href="#section-5.2-7" class="pilcrow">¶</a></p>
+<ul class="normal">
+<li class="normal" id="section-5.2-8.1">
+            <p id="section-5.2-8.1.1"><strong>Repair in flight (<code>resent_in_flight</code>):</strong> True when at least one
+replacement stream opened by a previous retroactive supersede (<a href="#supersede" class="auto internal xref">Section 5.4</a>)
+is still open for the switching set (<code>open_replacement_streams &gt; 0</code>).
+Because replacement streams are excluded from <code>d</code> so a downshift
+cannot trigger a second downshift, an open
+replacement stream cannot be counted as a clear boundary either: until the
+repair finishes, the overtaken delivery has not resolved.<a href="#section-5.2-8.1.1" class="pilcrow">¶</a></p>
+</li>
+          <li class="normal" id="section-5.2-8.2">
+            <p id="section-5.2-8.2.1"><strong>Target rung occupied (<code>target_occupied</code>):</strong> True when <code>i &lt; i_max</code> and
+<code>ordinary_open_streams(i + 1) &gt; 0</code> (at least one ordinary forwarding stream
+is still open at the next tier up). An old stream draining at tier <code>i + 1</code>
+is not congestion at tier <code>i</code> and <span class="bcp14">MUST NOT</span> trigger a downshift, but stepping
+up to tier <code>i + 1</code> while that stream is still open would immediately combine
+the new Group's stream with the lingering one (<code>d &gt;= 2</code>) and force an
+immediate downshift. At the top of the ladder (<code>i = i_max</code>),
+<code>target_occupied</code> is false.<a href="#section-5.2-8.2.1" class="pilcrow">¶</a></p>
+</li>
+        </ul>
+<p id="section-5.2-9">A Group boundary is considered <em>clear</em> if and only if <code>d &lt;= D_target</code>,
+<code>resent_in_flight</code> is false, and <code>target_occupied</code> is false. When
+<code>d &lt;= D_target</code> but either guard is true, the boundary is neither clear nor
+congested: <code>clear_streak</code> and <code>monitor_streak</code> are reset to <code>0</code>, and the
+current tier <code>i</code> and <code>exploring</code> state are held unchanged.<a href="#section-5.2-9" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="state-machine">
+<section id="section-5.3">
+        <h3 id="name-state-machine-and-adaptatio">
+<a href="#section-5.3" class="section-number selfRef">5.3. </a><a href="#name-state-machine-and-adaptatio" class="section-name selfRef">State Machine and Adaptation Logic</a>
+        </h3>
+<p id="section-5.3-1">In addition to the per-tier <code>ordinary_open_streams(j)</code> counters and the
+switching set's validated parameters (<code>rho</code> in <code>(0, 1]</code>, <code>U_min &gt;= 2</code>,
+<code>U_max</code> set to <code>0</code> or <code>&gt;= U_min</code>, <code>B</code>, and <code>retroactive_supersede</code> from
+<a href="#assignment-fields" class="auto internal xref">Section 4.2</a>), the publisher maintains the following state for the
+switching set:<a href="#section-5.3-1" class="pilcrow">¶</a></p>
+<div class="alignLeft art-text artwork" id="section-5.3-2">
+<pre>
+i                        : integer, initially 0    ; current tier
+exploring                : boolean, initially true ; fast-start exploration flag
+clear_streak             : integer, initially 0    ; consecutive clear Groups
+monitor_streak           : integer, initially 0    ; consecutive congested Objects
+g_last                   : integer or none         ; largest Group ID evaluated
+open_replacement_streams : integer, initially 0    ; open supersede streams
+                                                   ;   for this switching set
+</pre><a href="#section-5.3-2" class="pilcrow">¶</a>
+</div>
+<p id="section-5.3-3">The internal threshold constants have the following default values:<a href="#section-5.3-3" class="pilcrow">¶</a></p>
+<div class="alignLeft art-text artwork" id="section-5.3-4">
+<pre>
+D_target = 1  ; max active streams considered clear
+D_down   = 2  ; active streams indicating overlap/queuing
+M        = 3  ; consecutive intra-group samples with d &gt;= D_down
+              ; required to trigger a mid-group downshift
+</pre><a href="#section-5.3-4" class="pilcrow">¶</a>
+</div>
+<p id="section-5.3-5">The controller runs on two events: when the first Object of a new Group <code>g</code> is
+about to be forwarded (<code>is_new_group</code> is true when <code>g_last == none</code> or
+<code>g &gt; g_last</code>), and when a subsequent Object of an active Group is about to
+be forwarded (<code>is_new_group</code> is false).<a href="#section-5.3-5" class="pilcrow">¶</a></p>
+<div class="alignLeft art-text artwork" id="section-5.3-6">
+<pre>
+on_object_forward(g):
+  d = ordinary_open_streams(i)
+  resent_in_flight = (open_replacement_streams &gt; 0)
+  target_occupied = (i &lt; i_max) and (ordinary_open_streams(i + 1) &gt; 0)
+  i_prev = i
+  is_new_group = (g_last == none or g &gt; g_last)
+
+  if is_new_group:                          ; 1. Group boundary evaluation
+    g_last = g
+    is_clear = (d &lt;= D_target) and (not resent_in_flight) and (not target_occupied)
+
+    if is_clear:                            ; Clear: eligible to climb
+      monitor_streak = 0
+      clear_streak = clear_streak + 1
+      if i &lt; i_max:
+        step_ratio = 1.0 if R[i] == 0 else (R[i + 1] - R[i]) / R[i]
+        U_i = max( U_min, ceil( step_ratio / rho ) )
+        if U_max &gt; 0:
+          U_i = min( U_max, U_i )
+      else:
+        U_i = 2
+      needed = 1 if exploring else U_i
+      if clear_streak &gt;= needed:
+        i = min( i + 1, i_max )
+        clear_streak = 0
+        if exploring and i &gt;= i_max:
+          exploring = false
+    else if d &gt;= D_down:                    ; Congested: downshift
+      clear_streak = 0
+      monitor_streak = 0
+      exploring = false
+      i = max( i - 1, 0 )
+    else:                                   ; Guarded (or D_target &lt; d &lt; D_down):
+      clear_streak = 0                      ;   hold tier, reset streaks
+      monitor_streak = 0
+
+  else:                                     ; 2. Intra-group monitor
+    if d &gt;= D_down:
+      monitor_streak = monitor_streak + 1
+    else:
+      monitor_streak = 0
+
+    if (not exploring) and i &gt; 0 and monitor_streak &gt;= M:
+      i = i - 1
+      monitor_streak = 0
+      clear_streak = 0
+
+  downshifted = (i &lt; i_prev)
+
+  if downshifted and retroactive_supersede == 1: ; 3. Retroactive supersede
+    trigger_retroactive_supersede(i, i_prev)     ; if s_last &gt; i and cache exist,
+                                                 ; cancels s_last and opens a
+                                                 ; replacement stream at tier i
+                                                 ; with Subgroup Objects 0..N-1
+
+  if is_new_group:                          ; 4. Forward current Object
+    open ordinary forwarding stream for Group g on track m[i]
+    forward current Object on Group g's new stream
+  else if a replacement stream is open for Group g:
+    forward current Object on Group g's replacement stream
+  else:
+    forward current Object on Group g's existing stream
+</pre><a href="#section-5.3-6" class="pilcrow">¶</a>
+</div>
+<div id="fast-start-exploring-true">
+<section id="section-5.3.1">
+          <h4 id="name-fast-start-exploring-true">
+<a href="#section-5.3.1" class="section-number selfRef">5.3.1. </a><a href="#name-fast-start-exploring-true" class="section-name selfRef">Fast Start (<code>exploring = true</code>)</a>
+          </h4>
+<p id="section-5.3.1-1">At the start of a session, <code>exploring</code> is <code>true</code> and <code>i = 0</code>. At each clear
+Group boundary (d &lt;= D_target with both resent_in_flight and target_occupied false),
+the required streak is <code>needed = 1</code>,
+allowing the tier to climb by one rung per Group boundary without waiting for
+multi-Group observation windows. During fast start, the intra-group monitor is
+disarmed (<code>not exploring</code> is false) so that each newly probed tier is tested
+across at least one complete Group transmission. Fast start terminates
+permanently (<code>exploring = false</code>) as soon as <code>d &gt;= D_down</code> is
+observed at a Group boundary or when <code>i</code> reaches <code>i_max</code>.<a href="#section-5.3.1-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="steady-state-regulation-exploring-false">
+<section id="section-5.3.2">
+          <h4 id="name-steady-state-regulation-exp">
+<a href="#section-5.3.2" class="section-number selfRef">5.3.2. </a><a href="#name-steady-state-regulation-exp" class="section-name selfRef">Steady-State Regulation (<code>exploring = false</code>)</a>
+          </h4>
+<p id="section-5.3.2-1">Once fast start ends, advancing from tier <code>i</code> to tier <code>i + 1</code> requires <code>U(i)</code>
+consecutive clear Group boundaries (<code>d &lt;= D_target</code> with both
+<code>resent_in_flight</code> and <code>target_occupied</code> false), where:<a href="#section-5.3.2-1" class="pilcrow">¶</a></p>
+<div class="alignLeft art-text artwork" id="section-5.3.2-2">
+<pre>
+U(i) = max(2, U_min, ceil((R[i+1] - R[i]) / (R[i] * rho)))
+</pre><a href="#section-5.3.2-2" class="pilcrow">¶</a>
+</div>
+<p id="section-5.3.2-3">When <code>U_max</code> is greater than 0, the computed value is reduced to <code>U_max</code> if it
+exceeds <code>U_max</code>.<a href="#section-5.3.2-3" class="pilcrow">¶</a></p>
+<p id="section-5.3.2-4">Here <code>(R[i+1] - R[i]) / R[i]</code> is the fractional increase in nominal bitrate
+required by the next ladder tier. A step that doubles the bitrate requires
+twice the observation window of a step that increases the bitrate by 50%. If
+<code>R[i] = 0</code>, the publisher treats the step ratio as 1.0.<a href="#section-5.3.2-4" class="pilcrow">¶</a></p>
+<p id="section-5.3.2-5">Conversely, if <code>d &gt;= D_down</code> at any Group boundary, the publisher
+immediately steps down to <code>max(i - 1, 0)</code>, resets <code>clear_streak</code> and
+<code>monitor_streak</code> to <code>0</code>, and, when Retroactive supersede is enabled,
+initiates a retroactive supersede (<a href="#supersede" class="auto internal xref">Section 5.4</a>).<a href="#section-5.3.2-5" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="intra-group-monitoring">
+<section id="section-5.3.3">
+          <h4 id="name-intra-group-monitoring">
+<a href="#section-5.3.3" class="section-number selfRef">5.3.3. </a><a href="#name-intra-group-monitoring" class="section-name selfRef">Intra-Group Monitoring</a>
+          </h4>
+<p id="section-5.3.3-1">Waiting for the next Group boundary to adapt can leave a congested stream
+blocking the connection when path capacity drops mid-Group. During steady
+state (<code>exploring = false</code>), the publisher evaluates <code>d</code> prior to forwarding
+each Object within a Group. Because a brief overlap (<code>d = 2</code>) can occur
+naturally during the handoff between the last Object of Group <code>g - 1</code> and the
+first Object of Group <code>g</code>, a single reading of <code>d &gt;= D_down</code> is
+tolerated. If <code>d &gt;= D_down</code> persists for <code>M</code> consecutive Object
+forwarding events while <code>i &gt; 0</code>, the publisher immediately decrements <code>i</code> by 1,
+resets both streak counters, and, when Retroactive supersede is enabled,
+executes a retroactive supersede (<a href="#supersede" class="auto internal xref">Section 5.4</a>).<a href="#section-5.3.3-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+</section>
+</div>
+<div id="supersede">
+<section id="section-5.4">
+        <h3 id="name-retroactive-supersede">
+<a href="#section-5.4" class="section-number selfRef">5.4. </a><a href="#name-retroactive-supersede" class="section-name selfRef">Retroactive Supersede</a>
+        </h3>
+<p id="section-5.4-1">A purely forward-looking downshift that only takes effect on the <em>next</em> Group
+leaves the currently in-flight Group at the higher tier queued in the
+transport send buffer, prolonging congestion. To evacuate those queued bytes
+immediately, whenever a decision lowers the tier (<code>i &lt; i_prev</code>) and
+<code>Retroactive supersede</code> is enabled (<code>1</code>, <a href="#assignment-fields" class="auto internal xref">Section 4.2</a>), the
+publisher performs a <em>retroactive supersede</em> on the switching set:<a href="#section-5.4-1" class="pilcrow">¶</a></p>
+<ol start="1" type="1" class="normal type-1" id="section-5.4-2">
+<li id="section-5.4-2.1">
+            <p id="section-5.4-2.1.1"><strong>Locate and cancel the overtaken stream:</strong> The publisher identifies the
+newest in-flight forwarding stream <code>s_last</code> for the switching set that is
+carrying a track from a tier higher than <code>i</code> and that still has unsent
+Objects or bytes remaining in the transport send buffer yet to be
+transmitted on the wire (a stream whose bytes have all left the send
+buffer and is merely awaiting acknowledgment or closure is left to
+finish). If no such stream <code>s_last</code> exists, or if the cached beginning of
+the affected Subgroup on track <code>m[i]</code> is unavailable, steps 2-4 are
+skipped. Otherwise, the publisher aborts <code>s_last</code> by sending a QUIC
+<code>RESET_STREAM</code> frame with the MOQT <code>Cancelled</code> error code.<a href="#section-5.4-2.1.1" class="pilcrow">¶</a></p>
+</li>
+          <li id="section-5.4-2.2">
+            <p id="section-5.4-2.2.1"><strong>Open a replacement stream at tier <code>i</code>:</strong> The publisher opens a new
+unidirectional QUIC stream for the same Group ID using the track newly
+selected at tier <code>i</code>, writes the Subgroup header, and prepends the
+affected Subgroup's initial Objects <code>0</code> to <code>N - 1</code> of track <code>m[i]</code> from
+the relay's object cache (where <code>N</code> is the number of Objects already
+dispatched on <code>s_last</code>), followed by subsequent live Objects of that
+Subgroup as they arrive. If the relay has already received the remaining
+Objects of the Subgroup and no further live Objects will arrive, it
+replays those cached Objects as well.<a href="#section-5.4-2.2.1" class="pilcrow">¶</a></p>
+</li>
+          <li id="section-5.4-2.3">
+            <p id="section-5.4-2.3.1"><strong>Inherit the remaining latency budget:</strong> Let <code>t_age</code> be the
+elapsed time in milliseconds since <code>s_last</code> was originally opened.
+If the subscriber configured a non-zero latency budget <code>B &gt; 0</code>
+(<a href="#assignment-fields" class="auto internal xref">Section 4.2</a>), the publisher assigns the replacement stream a delivery
+timeout of <code>T_resend = max(1, B - t_age)</code>.
+If <code>B = 0</code>, no delivery timeout deadline is applied to the replacement
+stream.<a href="#section-5.4-2.3.1" class="pilcrow">¶</a></p>
+</li>
+          <li id="section-5.4-2.4">
+            <p id="section-5.4-2.4.1"><strong>Mark as replacement and exclude from <code>d</code>:</strong> The replacement stream is
+marked as a re-sent stream: it increments <code>open_replacement_streams</code> while
+open (setting <code>resent_in_flight</code>) and <span class="bcp14">MUST NOT</span> be counted in
+<code>ordinary_open_streams(j)</code> for any tier <code>j</code> (<a href="#signals" class="auto internal xref">Section 5.2</a>), ensuring that
+replacing an overtaken Group does not artificially inflate <code>d</code> or
+<code>target_occupied</code>.<a href="#section-5.4-2.4.1" class="pilcrow">¶</a></p>
+</li>
+        </ol>
+<p id="section-5.4-3">When <code>Retroactive supersede</code> is disabled (<code>0</code>), the publisher skips steps 1-4
+above: any Group already in flight continues to be forwarded on the track
+selected when that Group started, and the newly lowered tier <code>i</code> is applied
+starting with the next new Group. Because the still-draining stream at the
+higher tier sets <code>target_occupied</code> (<a href="#signals" class="auto internal xref">Section 5.2</a>), the state machine is
+automatically prevented from stepping back up into that tier until the
+in-flight Group finishes draining.<a href="#section-5.4-3" class="pilcrow">¶</a></p>
+</section>
+</div>
+</section>
+</div>
+<div id="limitations">
+<section id="section-6">
+      <h2 id="name-properties-and-trade-offs">
+<a href="#section-6" class="section-number selfRef">6. </a><a href="#name-properties-and-trade-offs" class="section-name selfRef">Properties and Trade-Offs</a>
+      </h2>
+<div id="reactive-congestion-detection">
+<section id="section-6.1">
+        <h3 id="name-reactive-congestion-detecti">
+<a href="#section-6.1" class="section-number selfRef">6.1. </a><a href="#name-reactive-congestion-detecti" class="section-name selfRef">Reactive Congestion Detection</a>
+        </h3>
+<p id="section-6.1-1">Because active stream depth measures unconsumed streams rather
+than estimating path capacity in advance, congestion is detected only after a
+Group has begun to overlap with the next Group (<code>d &gt;= D_down</code>).
+Retroactive supersede (<a href="#supersede" class="auto internal xref">Section 5.4</a>) mitigates the latency penalty of late
+detection by aborting the stalled high-bitrate stream and replacing it with a
+lower-bitrate encoding within the remaining latency budget <code>B</code>, provided the
+relay holds the earlier Objects of that Group in its cache.<a href="#section-6.1-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="no-absolute-bitrate-floor">
+<section id="section-6.2">
+        <h3 id="name-no-absolute-bitrate-floor">
+<a href="#section-6.2" class="section-number selfRef">6.2. </a><a href="#name-no-absolute-bitrate-floor" class="section-name selfRef">No Absolute Bitrate Floor</a>
+        </h3>
+<p id="section-6.2-1">The algorithm never falls below tier 0. If the path cannot sustain even the
+lowest-bitrate member (tier 0) of the ladder, streams at tier 0
+will exceed the latency budget <code>B</code> and be reset on delivery timeout, while the
+publisher continues attempting to forward tier 0. Deciding to terminate a
+subscription entirely when tier 0 is unsustainable is a publisher policy
+decision outside the scope of this algorithm.<a href="#section-6.2-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="single-switching-set-scope">
+<section id="section-6.3">
+        <h3 id="name-single-switching-set-scope">
+<a href="#section-6.3" class="section-number selfRef">6.3. </a><a href="#name-single-switching-set-scope" class="section-name selfRef">Single Switching Set Scope</a>
+        </h3>
+<p id="section-6.3-1">This algorithm adapts a single switching set per connection. Because
+backpressure is observed as open forwarding streams rather than an explicit
+bandwidth rate <code>B_total</code>, the signal reports whether the currently selected
+track fits the path, but does not produce a divisible bitrate figure that can
+be partitioned across multiple independent switching sets by rank and weight.
+Subscribers that require concurrent adaptation across multiple switching sets
+on the same connection <span class="bcp14">SHOULD</span> use an allocation algorithm such as the default
+algorithm of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>.<a href="#section-6.3-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+</section>
+</div>
+<div id="implementation-status">
+<section id="section-7">
+      <h2 id="name-implementation-status">
+<a href="#section-7" class="section-number selfRef">7. </a><a href="#name-implementation-status" class="section-name selfRef">Implementation Status</a>
+      </h2>
+<p id="section-7-1"><em>This section is to be removed before publishing as an RFC, per
+<span>[<a href="#RFC7942" class="cite xref">RFC7942</a>]</span>.</em><a href="#section-7-1" class="pilcrow">¶</a></p>
+<p id="section-7-2">An experimental implementation of the algorithm described in this document has
+been developed for the MOQtail relay <span>[<a href="#MOQtail" class="cite xref">MOQtail</a>]</span>. It covers <a href="#ladder" class="auto internal xref">Section 5.1</a>,
+<a href="#signals" class="auto internal xref">Section 5.2</a>, <a href="#state-machine" class="auto internal xref">Section 5.3</a>, and <a href="#supersede" class="auto internal xref">Section 5.4</a> for a single switching set,
+including cached object replay and the inherited re-send deadline.
+The prototype currently differs from this specification in two respects.
+First, rather than exposing a single algorithm identifier whose supersede
+behavior is toggled by the <code>Retroactive supersede</code> field in
+<code>SWITCHING_SET_ASSIGNMENT</code> (<a href="#assignment-fields" class="auto internal xref">Section 4.2</a>), it registers the
+supersede and non-supersede modes as two separate provisional algorithm
+identifiers from the private-use range pending the allocation requested in
+<a href="#iana-algorithm" class="auto internal xref">Section 9.1</a>; consequently, the <code>Retroactive supersede</code> field value is
+not yet acted on even though the wire codec parses the trailing extension
+fields. Second, it does not yet reject a second active switching set.
+An earlier version of this SSTS algorithm has been evaluated in <span>[<a href="#MMSP26" class="cite xref">MMSP26</a>]</span>, and
+the current prototype has also been evaluated against the MOQtail publisher and
+subscriber; interoperability with other SSTS implementations has not yet been
+tested.<a href="#section-7-2" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="security-considerations">
+<section id="section-8">
+      <h2 id="name-security-considerations">
+<a href="#section-8" class="section-number selfRef">8. </a><a href="#name-security-considerations" class="section-name selfRef">Security Considerations</a>
+      </h2>
+<p id="section-8-1">This document defines an algorithm for an existing MOQT extension and inherits
+the security considerations of <span>[<a href="#MoQTransport" class="cite xref">MoQTransport</a>]</span> and <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>, including the
+asymmetric resource exhaustion that switching set fan-out makes easier. The
+considerations below are those that differ from the default algorithm.<a href="#section-8-1" class="pilcrow">¶</a></p>
+<div id="inaccurate-throughput-thresholds-cannot-starve-a-track">
+<section id="section-8.1">
+        <h3 id="name-inaccurate-throughput-thres">
+<a href="#section-8.1" class="section-number selfRef">8.1. </a><a href="#name-inaccurate-throughput-thres" class="section-name selfRef">Inaccurate Throughput Thresholds Cannot Starve a Track</a>
+        </h3>
+<p id="section-8.1-1">In the default algorithm of <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>, a track whose declared throughput
+threshold exceeds the publisher's bandwidth estimate <code>B_total</code> is never
+selected. Under the algorithm defined in this document, throughput thresholds
+are used only for ladder ordering and relative step size calculation
+<code>(R[i+1] - R[i]) / R[i]</code>. A miscalibrated absolute threshold cannot permanently
+prevent the algorithm from probing a higher tier once the transport queue is
+clear, and if the probed tier exceeds actual path capacity, stream depth <code>d</code>
+rises and forces a downshift regardless of what bitrate was declared.<a href="#section-8.1-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="subscriber-manipulation-of-flow-control-or-parameters">
+<section id="section-8.2">
+        <h3 id="name-subscriber-manipulation-of-">
+<a href="#section-8.2" class="section-number selfRef">8.2. </a><a href="#name-subscriber-manipulation-of-" class="section-name selfRef">Subscriber Manipulation of Flow Control or Parameters</a>
+        </h3>
+<p id="section-8.2-1">A subscriber that intentionally withholds QUIC flow control credit or stops
+reading from forwarding streams causes <code>d</code> to rise, forcing the publisher down
+to tier 0. Because tier state is isolated per connection, a slow subscriber
+only degrades its own quality and causes the publisher to send it <em>fewer</em>
+bytes.<a href="#section-8.2-1" class="pilcrow">¶</a></p>
+<p id="section-8.2-2">Conversely, a subscriber that signals an aggressive probing risk factor
+(<code>rho_pct = 100</code>, <code>U_min = 2</code>) can cause the publisher to probe
+upward more frequently, triggering more frequent retroactive supersedes. Each
+retroactive supersede cancels an existing stream and re-sends cached Objects
+at a lower bitrate. Publishers <span class="bcp14">SHOULD</span> bound the rate of retroactive supersedes
+(for example, at most one supersede per Group ID per switching set) so that
+repeated downshifts within a single Group do not cause excessive cache reads
+or stream churn.<a href="#section-8.2-2" class="pilcrow">¶</a></p>
+</section>
+</div>
+<div id="resource-cost-of-the-signals">
+<section id="section-8.3">
+        <h3 id="name-resource-cost-of-the-signal">
+<a href="#section-8.3" class="section-number selfRef">8.3. </a><a href="#name-resource-cost-of-the-signal" class="section-name selfRef">Resource Cost of the Signals</a>
+        </h3>
+<p id="section-8.3-1">The state and stream counter the publisher keeps (<a href="#signals" class="auto internal xref">Section 5.2</a>,
+<a href="#state-machine" class="auto internal xref">Section 5.3</a>) are bounded and freed with the connection.
+There are no process-wide tables keyed by subscriber identity, and no state
+that outlives a subscription, so a subscriber cannot cause unbounded memory
+growth at the publisher by repeatedly creating and destroying switching sets.
+Publishers <span class="bcp14">SHOULD</span> nevertheless bound the number of switching sets and members
+per connection, as recommended by <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>.<a href="#section-8.3-1" class="pilcrow">¶</a></p>
+</section>
+</div>
+</section>
+</div>
+<div id="iana-considerations">
+<section id="section-9">
+      <h2 id="name-iana-considerations">
+<a href="#section-9" class="section-number selfRef">9. </a><a href="#name-iana-considerations" class="section-name selfRef">IANA Considerations</a>
+      </h2>
+<div id="iana-algorithm">
+<section id="section-9.1">
+        <h3 id="name-ssts-algorithm-registration">
+<a href="#section-9.1" class="section-number selfRef">9.1. </a><a href="#name-ssts-algorithm-registration" class="section-name selfRef">SSTS Algorithm Registration</a>
+        </h3>
+<p id="section-9.1-1">IANA is requested to add the following entry to the "SSTS-Algorithms" registry
+established by <span>[<a href="#SSTS" class="cite xref">SSTS</a>]</span>:<a href="#section-9.1-1" class="pilcrow">¶</a></p>
+<table class="center" id="table-1">
+          <caption><a href="#table-1" class="selfRef">Table 1</a></caption>
+<thead>
+            <tr>
+              <th class="text-right" rowspan="1" colspan="1">Type</th>
+              <th class="text-left" rowspan="1" colspan="1">Name</th>
+              <th class="text-left" rowspan="1" colspan="1">Specification</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="text-right" rowspan="1" colspan="1">TBD</td>
+              <td class="text-left" rowspan="1" colspan="1">Backpressure</td>
+              <td class="text-left" rowspan="1" colspan="1">This document</td>
+            </tr>
+          </tbody>
+        </table>
+</section>
+</div>
+</section>
+</div>
+<div id="sec-combined-references">
+<section id="section-10">
+      <h2 id="name-references">
+<a href="#section-10" class="section-number selfRef">10. </a><a href="#name-references" class="section-name selfRef">References</a>
+      </h2>
+<div id="sec-normative-references">
+<section id="section-10.1">
+        <h3 id="name-normative-references">
+<a href="#section-10.1" class="section-number selfRef">10.1. </a><a href="#name-normative-references" class="section-name selfRef">Normative References</a>
+        </h3>
+<dl class="references">
+<dt id="MoQTransport">[MoQTransport]</dt>
+        <dd>
+<span class="refAuthor">Nandakumar, S.</span>, <span class="refAuthor">Vasiliev, V.</span>, <span class="refAuthor">Swett, I.</span>, and <span class="refAuthor">A. Frindell</span>, <span class="refTitle">"Media over QUIC Transport"</span>, <span class="refContent">Work in Progress</span>, <span class="seriesInfo">Internet-Draft, draft-ietf-moq-transport-22</span>, <time datetime="2026-10-01" class="refDate">1 October 2026</time>, <span>&lt;<a href="https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-22">https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-22</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+<dt id="RFC2119">[RFC2119]</dt>
+        <dd>
+<span class="refAuthor">Bradner, S.</span>, <span class="refTitle">"Key words for use in RFCs to Indicate Requirement Levels"</span>, <span class="seriesInfo">BCP 14</span>, <span class="seriesInfo">RFC 2119</span>, <span class="seriesInfo">DOI 10.17487/RFC2119</span>, <time datetime="1997-03" class="refDate">March 1997</time>, <span>&lt;<a href="https://www.rfc-editor.org/rfc/rfc2119">https://www.rfc-editor.org/rfc/rfc2119</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+<dt id="RFC8174">[RFC8174]</dt>
+        <dd>
+<span class="refAuthor">Leiba, B.</span>, <span class="refTitle">"Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words"</span>, <span class="seriesInfo">BCP 14</span>, <span class="seriesInfo">RFC 8174</span>, <span class="seriesInfo">DOI 10.17487/RFC8174</span>, <time datetime="2017-05" class="refDate">May 2017</time>, <span>&lt;<a href="https://www.rfc-editor.org/rfc/rfc8174">https://www.rfc-editor.org/rfc/rfc8174</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+<dt id="SSTS">[SSTS]</dt>
+      <dd>
+<span class="refAuthor">Law, W.</span>, <span class="refAuthor">Swett, I.</span>, <span class="refAuthor">Nandakumar, S.</span>, <span class="refAuthor">Zanaty, M.</span>, <span class="refAuthor">Vasiliev, V.</span>, <span class="refAuthor">Begen, A.</span>, <span class="refAuthor">Gurel, Z.</span>, and <span class="refAuthor">G. Simon</span>, <span class="refTitle">"Sender-Side Track Switching"</span>, <time datetime="2026" class="refDate">2026</time>, <span>&lt;<a href="https://github.com/wilaw/moqt-ssts/blob/main/draft-wilaw-moq-moqt-ssts.md">https://github.com/wilaw/moqt-ssts/blob/main/draft-wilaw-moq-moqt-ssts.md</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+</dl>
+</section>
+</div>
+<div id="sec-informative-references">
+<section id="section-10.2">
+        <h3 id="name-informative-references">
+<a href="#section-10.2" class="section-number selfRef">10.2. </a><a href="#name-informative-references" class="section-name selfRef">Informative References</a>
+        </h3>
+<dl class="references">
+<dt id="MMSP26">[MMSP26]</dt>
+        <dd>
+<span class="refAuthor">Zengin, A. F.</span>, <span class="refAuthor">Gurel, Z.</span>, and <span class="refAuthor">A. C. Begen</span>, <span class="refTitle">"Relay-Side Latency-Budget-Aware Rate Adaptation in MOQ Transport"</span>, <span class="seriesInfo">IEEE Proc. IEEE Int. Workshop on Multimedia Signal Processing (MMSP)</span>, <time datetime="2026" class="refDate">2026</time>. </dd>
+<dd class="break"></dd>
+<dt id="MOQtail">[MOQtail]</dt>
+        <dd>
+<span class="refAuthor">Gurel, Z.</span>, <span class="refAuthor">Ugur, D.</span>, and <span class="refAuthor">A. C. Begen</span>, <span class="refTitle">"MOQtail: open-source, IETF-compliant MOQT protocol libraries"</span>, <span class="seriesInfo">ACM Proc. ACM Multimedia Systems Conf. (MMSys), Hong Kong</span>, <span class="seriesInfo">DOI 10.1145/3793853.3799817</span>, <time datetime="2026-04" class="refDate">April 2026</time>, <span>&lt;<a href="https://doi.org/10.1145/3793853.3799817">https://doi.org/10.1145/3793853.3799817</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+<dt id="Probing">[Probing]</dt>
+        <dd>
+<span class="refAuthor">Gürel, Z.</span>, <span class="refAuthor">Begen, A. C.</span>, and <span class="refAuthor">D. Ugur</span>, <span class="refTitle">"Probe Tracks for Bandwidth Estimation in Media over QUIC Transport"</span>, <span class="refContent">Work in Progress</span>, <span class="seriesInfo">Internet-Draft, draft-gurel-moq-probing-00</span>, <time datetime="2026-10-12" class="refDate">12 October 2026</time>, <span>&lt;<a href="https://datatracker.ietf.org/doc/html/draft-gurel-moq-probing-00">https://datatracker.ietf.org/doc/html/draft-gurel-moq-probing-00</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+<dt id="RFC7942">[RFC7942]</dt>
+        <dd>
+<span class="refAuthor">Sheffer, Y.</span> and <span class="refAuthor">A. Farrel</span>, <span class="refTitle">"Improving Awareness of Running Code: The Implementation Status Section"</span>, <span class="seriesInfo">BCP 205</span>, <span class="seriesInfo">RFC 7942</span>, <span class="seriesInfo">DOI 10.17487/RFC7942</span>, <time datetime="2016-07" class="refDate">July 2016</time>, <span>&lt;<a href="https://www.rfc-editor.org/rfc/rfc7942">https://www.rfc-editor.org/rfc/rfc7942</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+<dt id="RFC9002">[RFC9002]</dt>
+      <dd>
+<span class="refAuthor">Iyengar, J., Ed.</span> and <span class="refAuthor">I. Swett, Ed.</span>, <span class="refTitle">"QUIC Loss Detection and Congestion Control"</span>, <span class="seriesInfo">RFC 9002</span>, <span class="seriesInfo">DOI 10.17487/RFC9002</span>, <time datetime="2021-05" class="refDate">May 2021</time>, <span>&lt;<a href="https://www.rfc-editor.org/rfc/rfc9002">https://www.rfc-editor.org/rfc/rfc9002</a>&gt;</span>. </dd>
+<dd class="break"></dd>
+</dl>
+</section>
+</div>
+</section>
+</div>
+<div id="authors-addresses">
+<section id="appendix-A">
+      <h2 id="name-authors-addresses">
+<a href="#name-authors-addresses" class="section-name selfRef">Authors' Addresses</a>
+      </h2>
+<address class="vcard">
+        <div dir="auto" class="left"><span class="fn nameRole">Alperen Fatih Zengin</span></div>
+<div dir="auto" class="left"><span class="org">Ozyegin University</span></div>
+<div class="email">
+<span>Email:</span>
+<a href="mailto:fatih.zengin@ozu.edu.tr" class="email">fatih.zengin@ozu.edu.tr</a>
+</div>
+</address>
+<address class="vcard">
+        <div dir="auto" class="left"><span class="fn nameRole">Zafer Gurel</span></div>
+<div dir="auto" class="left"><span class="org">Ozyegin University</span></div>
+<div class="email">
+<span>Email:</span>
+<a href="mailto:zafer.gurel@ozu.edu.tr" class="email">zafer.gurel@ozu.edu.tr</a>
+</div>
+</address>
+<address class="vcard">
+        <div dir="auto" class="left"><span class="fn nameRole">Ali C. Begen</span></div>
+<div dir="auto" class="left"><span class="org">Networked Media</span></div>
+<div class="email">
+<span>Email:</span>
+<a href="mailto:ali.begen@networked.media" class="email">ali.begen@networked.media</a>
+</div>
+</address>
+<address class="vcard">
+        <div dir="auto" class="left"><span class="fn nameRole">Deniz Ugur</span></div>
+<div dir="auto" class="left"><span class="org">Ozyegin University</span></div>
+<div class="email">
+<span>Email:</span>
+<a href="mailto:deniz.ugur@ozu.edu.tr" class="email">deniz.ugur@ozu.edu.tr</a>
+</div>
+</address>
+</section>
+</div>
+<script>const toc = document.getElementById("toc");
+toc.querySelector("h2").addEventListener("click", e => {
+  toc.classList.toggle("active");
+});
+toc.querySelector("nav").addEventListener("click", e => {
+  toc.classList.remove("active");
+});
+</script>
+</body>
+</html>
